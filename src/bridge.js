@@ -44,9 +44,16 @@ import {
   createOwnerTranscript,
   buildOwnerHandover,
   buildGroupResumeNote,
+  redactForHandover,
   DORMANT_MAX_MS,
 } from './mode-handover.js';
-import { resolvePriceTable } from './model-prices.js';
+import { resolvePriceTable, CN_HOLIDAYS } from './model-prices.js';
+import { createScheduler } from './scheduler/engine.js';
+import { parseRemindCommand, REMIND_HELP, formatTaskList } from './scheduler/commands.js';
+import { createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt } from './scheduler/notes.js';
+import { describeInstant } from './scheduler/time.js';
+import { createSilenceSchedule, peakPresetRanges, describeRange } from './silence-schedule.js';
+import { createRoleRefreshTracker, roleFingerprint, buildRoleRefreshBlock, normalizeApplyMode } from './role-refresh.js';
 import {
   normalizeEffortId,
   normalizeVisionSetting,
@@ -820,6 +827,8 @@ function loadConfig() {
         personProfile: true,
         requestMode: true,
         crossGroup: true,
+        schedule: true,
+        handoverMemory: true,
         ownerRelay: false,
         ownerGroupAccess: false   // 管理员私聊只读查看白名单群 + 给群设长期规则（默认关闭）
       },
@@ -952,6 +961,10 @@ function loadConfig() {
     personProfile: true,
     requestMode: true,
     crossGroup: true,
+    // 定时任务：只在管理员私聊里可用，只能登记发给管理员私聊的任务（见 src/scheduler/engine.js）
+    schedule: true,
+    // 不是工具：切到 agent 时，是否把二代仿真里管理员私聊的长期记忆一起交接给 agent（见 withHandover）
+    handoverMemory: true,
     sendVoice: false,
     // v0.4.2：管理员私聊托付群会话（默认关闭）
     ownerRelay: false,
@@ -2845,6 +2858,146 @@ async function main() {
     applyMode: applyModeChange,
     onApprovalTimeout,
   });
+  // ── 定时任务（逻辑在 src/scheduler/，这里只接线：校验目标、怎么发） ──────────────────
+  const scheduledNotes = createScheduledNoteStore();
+  const schedulerOwnerKey = () => `private:${String(cfg.ownerQQ ?? '')}`;
+  /** 定时任务的发送对象：管理员私聊、白名单好友、白名单群。 */
+  function schedulerTargetError(key) {
+    const m = /^(group|private):([1-9]\d{0,11})$/.exec(String(key));
+    if (!m) return `发送对象「${key}」格式不对（要写成 group:群号 或 private:QQ号）`;
+    if (key === schedulerOwnerKey()) return null;
+    if (!allowed(m[1], Number(m[2]), cfg)) return `${key} 不在白名单里（allow.${m[1] === 'group' ? 'groups' : 'private'}），不能作为定时任务的发送对象`;
+    return null;
+  }
+  async function deliverScheduled(task, target, { manual }) {
+    const tz = task.timezone || scheduler.snapshot().settings.timezone;
+    const whenText = describeInstant(Date.now(), tz);
+    if (task.kind === 'text') {
+      if (SENSITIVE_RE.test(task.text)) return { status: 'failed', reason: '内容疑似含路径 / 凭据，已拦截' };
+      if (target === schedulerOwnerKey()) {
+        // 发给管理员：走管理通道专用发送，任何模式下都能发（文字是管理员自己登记的）
+        await sendOwnerDirect(task.text);
+      } else {
+        if (!isSessionAllowedInCurrentMode(target)) return { status: 'skipped', reason: `当前模式（${currentMode}）下这个会话暂停` };
+        await sendToQQ(target, task.text);
+        if (!lastSendSucceeded(target)) return { status: 'failed', reason: 'QQ 发送失败' };
+      }
+      if (currentMode === 'reserved2' && socialV2.conversations.has(target)) recordSentMessagesV2(target, [`（定时任务）${task.text}`]);
+      return { status: 'sent', reason: manual ? '手动试发' : '' };
+    }
+    // 叫 AI 来说：唤醒这个会话自己的 AI（权限不变，只是多一个唤醒原因）
+    if (!isSessionAllowedInCurrentMode(target)) return { status: 'skipped', reason: `当前模式（${currentMode}）下这个会话暂停` };
+    const sw = scheduledSilenceFor(target);
+    if (sw && silence.config().options.pauseAiTasks && !task.runDuringSilence) return { status: 'skipped', reason: silenceReason(sw) };
+    if (sw) silenceBypass.set(target, Date.now() + 10 * 60_000); // 这个任务设了「静默时段内照常执行」：临时放行 10 分钟
+    const note = { taskId: task.id, name: task.name, instruction: task.instruction, whenText };
+    if (currentMode === 'reserved2') {
+      if (socialV2.paused) return { status: 'skipped', reason: '二代仿真已暂停' };
+      scheduledNotes.add(target, note);
+      await sendWakePromptV2(target, 'scheduled');
+      return { status: 'sent', reason: '已唤醒 AI（发什么由 AI 决定）' };
+    }
+    const r = await deliverPrompt(target, scheduledDirectPrompt(note), { silent: true });
+    return r?.ok === false ? { status: 'failed', reason: r.error || '投递失败' } : { status: 'sent', reason: '已交给 AI' };
+  }
+  const scheduler = createScheduler({
+    file: path.join(STATE_DIR, 'scheduler.json'),
+    deliver: deliverScheduled,
+    validateTarget: schedulerTargetError,
+    ownerKey: schedulerOwnerKey,
+    holidays: CN_HOLIDAYS,
+    log: (m) => log(m),
+    audit: (event, detail) => { try { ext.audit.append(event, detail); } catch {} },
+    sensitive: (t) => SENSITIVE_RE.test(String(t ?? '')),
+  });
+  scheduler.load();
+
+  // ── 定时静默（逻辑在 src/silence-schedule.js）：按时间段让 AI 停下来省 token ─────────────────
+  const silence = createSilenceSchedule({ file: path.join(STATE_DIR, 'silence-schedule.json'), holidays: CN_HOLIDAYS, log: (m) => log(m) });
+  // ── 角色卡变更后重新读卡（逻辑在 src/role-refresh.js）：记下每个会话读到的是哪一版卡 ─────────────
+  const roleRefresh = createRoleRefreshTracker({ file: path.join(STATE_DIR, 'role-seen.json'), onError: (e) => log(`⚠️ 角色卡版本记录读写失败：${e?.message ?? e}`) });
+
+  // 定时静默期间被「照常执行」的定时任务临时放行的会话：key -> 截止时间
+  const silenceBypass = new Map();
+  /** 这个会话现在是否处在定时静默里（管理员私聊默认不受影响）。返回生效的时间段或 null。 */
+  function scheduledSilenceFor(key) {
+    const w = silence.current();
+    if (!w) return null;
+    if (key === `private:${String(cfg.ownerQQ ?? '')}` && !silence.config().options.includeOwnerPrivate) return null;
+    if ((silenceBypass.get(key) ?? 0) > Date.now()) return null;
+    return w;
+  }
+  const silenceReason = (w) => `定时静默中（${w.range.name}，到 ${describeInstant(w.endMs, silence.config().timezone)}）`;
+  let silenceMonitorStarted = false;
+  /** 每 30 秒检查一次：定时静默开始 / 结束时记日志；结束时给静默期间被直接找过的会话补一次唤醒。 */
+  function silenceTick() {
+    {
+      const change = silence.poll();
+      if (!change) return;
+      if (change.type === 'start') {
+        log(`定时静默开始：${change.window.range.name}（${describeRange(change.window.range)}）`);
+        appendActivity(`定时静默开始：${change.window.range.name}`);
+        return;
+      }
+      log('定时静默结束，恢复正常');
+      appendActivity('定时静默结束');
+      // 静默期间有人 @ / 叫名字 / 提问 / 拍一拍 / 私聊找过 AI：结束时补一次唤醒，让它看看未读
+      if (silence.config().options.catchUpOnEnd && currentMode === 'reserved2') {
+        for (const [key, st] of socialV2.conversations) {
+          if (!st.silenceMissedDirect) continue;
+          st.silenceMissedDirect = false;
+          if (scheduledSilenceFor(key)) continue;
+          void sendWakePromptV2(key, 'silenceEnded').catch((error) => log(`[reserved2] 静默结束补唤醒异常 ${key}:`, error?.message ?? error));
+        }
+      }
+    }
+  }
+  function startSilenceMonitorOnce() {
+    if (silenceMonitorStarted) return;
+    silenceMonitorStarted = true;
+    silenceTick();
+    const t = setInterval(silenceTick, 30_000);
+    t.unref?.();
+  }
+  let schedulerStarted = false;
+  function startSchedulerOnce() {
+    if (schedulerStarted) return;
+    schedulerStarted = true;
+    const missed = scheduler.catchUpOnStart();
+    if (missed.length) {
+      const lines = missed.slice(0, 10).map((m) => `#${m.id}「${m.name}」${describeInstant(m.at, scheduler.snapshot().settings.timezone)}`);
+      void sendOwnerDirect(`⏰ 桥接没运行期间错过了 ${missed.length} 个定时任务（超过补发时间，没有补发）：\n${lines.join('\n')}`);
+    }
+    scheduler.start();
+  }
+  /** 管理员私聊命令 /remind：桥接直接处理。返回要回复的文字；不是 /remind 返回 null。 */
+  async function handleRemindCommand(text) {
+    const cmd = parseRemindCommand(text, { now: Date.now(), tz: scheduler.snapshot().settings.timezone });
+    if (!cmd) return null;
+    if (cmd.error) return `⚠️ ${cmd.error}`;
+    const owner = schedulerOwnerKey();
+    try {
+      switch (cmd.action) {
+        case 'help': return REMIND_HELP;
+        case 'list': return formatTaskList(scheduler.listTasks());
+        case 'add': {
+          const t = scheduler.createTask({ ...cmd.task, targets: [owner] }, { source: 'owner-command' });
+          return `✅ 已登记 #${t.id}：${t.scheduleText} → ${t.kind === 'ai' ? '叫 AI：' + t.instruction : '文字：' + t.text}${t.nextRunText ? `\n下次：${t.nextRunText}` : ''}\n发 /remind del ${t.id} 可删除。`;
+        }
+        case 'delete': { const t = scheduler.deleteTask(cmd.id, { source: 'owner-command' }); return `🗑 已删除 #${t.id}「${t.name}」`; }
+        case 'enable': { const t = scheduler.setEnabled(cmd.id, true, { source: 'owner-command' }); return `▶️ 已启用 #${t.id}「${t.name}」${t.nextRunText ? `，下次 ${t.nextRunText}` : ''}`; }
+        case 'disable': { const t = scheduler.setEnabled(cmd.id, false, { source: 'owner-command' }); return `⏸ 已暂停 #${t.id}「${t.name}」`; }
+        case 'run': {
+          const r = await scheduler.runNow(cmd.id, { source: 'owner-command' });
+          return `🧪 已试发 #${cmd.id}：${r.outcomes.map((o) => `${o.target} ${o.status}${o.reason ? `（${o.reason}）` : ''}`).join('；')}`;
+        }
+        default: return REMIND_HELP;
+      }
+    } catch (error) {
+      return `⚠️ ${error?.message ?? error}`;
+    }
+  }
+
   const queued = new Map(); // key -> { promptText }[]
   const queuedHintAt = new Map(); // key -> timestamp（冷却提示）
   const QUEUE_MAX = 50;
@@ -3212,7 +3365,19 @@ async function main() {
       // 最新的一两条 owner 消息就在这次消息里，交接里不重复
       const entries = ownerTranscript.recent({ since: p.resumed ? p.dormantAt : 0 });
       while (entries.length && entries[entries.length - 1].role === 'owner' && now - entries[entries.length - 1].at < 60_000) entries.pop();
-      block = buildOwnerHandover({ entries, from: p.from, to: p.to, resumed: p.resumed, dormantMs: p.resumed ? now - p.dormantAt : 0, now });
+      // 切进 agent 时可以顺带交接二代仿真里 AI 在管理员私聊记下的长期记忆（话题 / 想说的话 / 印象）。
+      // 只取管理员私聊这一个会话的，不取任何群的；开关是二代工具开关里的 handoverMemory（默认开）。
+      // 从休眠恢复的私聊会话不用带：它自己的唤醒提示里本来就有这些。
+      let memoryText = '';
+      if (!p.resumed && p.to?.mode === 'closed-agent' && cfg.socialV2?.tools?.handoverMemory !== false) {
+        const ownerSt = socialV2.conversations.get(ownerKeyOf());
+        if (ownerSt) {
+          memoryText = formatMemoryV2(ownerSt).split('\n')
+            .map((line) => redactForHandover(line, (t) => redactSensitiveText(redactKnownTokensOnly(t))))
+            .filter(Boolean).join('\n');
+        }
+      }
+      block = buildOwnerHandover({ entries, from: p.from, to: p.to, resumed: p.resumed, dormantMs: p.resumed ? now - p.dormantAt : 0, now, memoryText });
     } else if (p.resumed) {
       block = buildGroupResumeNote({ dormantMs: now - p.dormantAt, from: p.from });
     }
@@ -3403,6 +3568,8 @@ async function main() {
           controllerReady = true;
           lastObservedDshMode = currentMode;
           ext.controller.start();
+          startSchedulerOnce();
+          startSilenceMonitorOnce();
         }
       })();
     }
@@ -3924,6 +4091,11 @@ async function main() {
             pendingApprovals: ext.approvals.list().length,
             role: rs.role ?? null,
             roleMode: rs.mode ?? 'active',
+            silence: (() => {
+              if (rs.mode === 'silent') return { source: 'manual' };
+              const w = silence.current();
+              return w ? { source: 'schedule', name: w.range.name, untilText: describeInstant(w.endMs, silence.config().timezone) } : null;
+            })(),
             dshReady,
             ownerQQ: cfg.ownerQQ ?? null,
             allowGroups: cfg.allow?.groups ?? [],
@@ -3974,6 +4146,19 @@ async function main() {
           sendJson({ ok: true, mode: currentMode, level: currentLevel, closedAgentPreset, dshSynced: lastObservedDshMode === currentMode });
           return;
         }
+        // 切换 / 清除人格后的生效方式：nextWake = 各会话下一次唤醒时带上新卡；immediate = 现在就唤醒一次。
+        // 聊天模式 / 一代仿真每条消息都带角色卡，切换本来就立即生效。
+        const applyRoleChange = (apply) => {
+          const mode = normalizeApplyMode(apply);
+          if (currentMode !== 'reserved2') return { apply: mode, mode: currentMode, note: '当前模式每条消息都带角色卡，已立即生效' };
+          if (mode !== 'immediate') {
+            const pending = roleRefresh.stale(state.sessions, currentRoleFingerprintV2()).filter((k) => isSessionAllowedInCurrentMode(k)).length;
+            return { apply: mode, mode: currentMode, woke: 0, pending };
+          }
+          const r = refreshRoleNowV2();
+          log(`控制台：角色卡立即生效，唤醒 ${r.woke.length} 个会话重新读卡${r.pending ? `（${r.pending} 个在定时静默里，下次唤醒再读）` : ''}`);
+          return { apply: mode, mode: currentMode, woke: r.woke.length, pending: r.pending ?? 0 };
+        };
         if (req.method === 'POST' && url.pathname === '/api/role') {
           const body = await readBody();
           const rs = readRoleState();
@@ -3985,11 +4170,11 @@ async function main() {
             }
             writeRoleState(name, rs.mode);
             log(`控制台：角色已设置为 ${name}`);
-            sendJson({ ok: true, role: name });
+            sendJson({ ok: true, role: name, refresh: applyRoleChange(body.apply) });
           } else {
             writeRoleState(null, rs.mode);
             log('控制台：角色已清除');
-            sendJson({ ok: true, role: null });
+            sendJson({ ok: true, role: null, refresh: applyRoleChange(body.apply) });
           }
           return;
         }
@@ -3999,7 +4184,16 @@ async function main() {
           const mode = body.mode === 'silent' ? 'silent' : 'active';
           writeRoleState(rs.role, mode);
           log(`控制台：静默模式 ${mode === 'silent' ? '开启' : '关闭'}`);
-          sendJson({ ok: true, roleMode: mode });
+          // 定时静默期间点「恢复正常」：这一段临时恢复（到这一段结束），下一段照常
+          let resumedScheduled = null;
+          if (mode === 'active' && silence.current()) {
+            const w = silence.resumeCurrent();
+            if (w) {
+              resumedScheduled = { name: w.range.name, untilText: describeInstant(w.endMs, silence.config().timezone) };
+              log(`控制台：定时静默「${w.range.name}」这一段临时恢复，到 ${resumedScheduled.untilText}`);
+            }
+          }
+          sendJson({ ok: true, roleMode: mode, resumedScheduled });
           return;
         }
         // ── 人格管理 ──────────────────────────────────────────────────────────
@@ -4067,7 +4261,9 @@ async function main() {
           if (!fs.existsSync(roleFilePath(name))) { sendJson({ ok: false, error: `人格「${name}」不存在` }, 404); return; }
           writeRoleContent(name, content);
           log(`控制台：更新人格「${name}」（${content.length} 字符）`);
-          sendJson({ ok: true, role: name, chars: content.length, warnings: roleWarnings(content) });
+          // 改的是当前启用的人格：按选的生效方式处理（默认下次唤醒；立即 = 现在就唤醒还没读到新卡的会话）。改的不是当前人格就不涉及。
+          const isActive = readRoleState().role === name;
+          sendJson({ ok: true, role: name, chars: content.length, warnings: roleWarnings(content), refresh: isActive ? applyRoleChange(body.apply) : { apply: normalizeApplyMode(body.apply), notActive: true } });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/roles/rename') {
@@ -4650,6 +4846,70 @@ async function main() {
           return;
         }
 
+        // ── 定时静默（控制台；agent token 默认拒绝） ─────────────────────────────────────────
+        if (url.pathname === '/api/silence') {
+          if (req.method === 'GET') {
+            sendJson({ ok: true, ...silence.status(), manual: readRoleState().mode === 'silent', peakPreset: peakPresetRanges(priceTable), writable: silence.isWritable() });
+            return;
+          }
+          if (req.method === 'POST') {
+            try {
+              const body = await readBody();
+              silence.update(body);
+              log(`控制台：定时静默已${silence.config().enabled ? '开启' : '关闭'}（${silence.config().ranges.filter((r) => r.enabled).length} 个时间段启用）`);
+              ext.audit.append?.('silence.updated', { enabled: silence.config().enabled, ranges: silence.config().ranges.length });
+              sendJson({ ok: true, ...silence.status(), manual: readRoleState().mode === 'silent', peakPreset: peakPresetRanges(priceTable) });
+            } catch (error) {
+              sendJson({ ok: false, error: error?.message ?? String(error) }, 400);
+            }
+            return;
+          }
+        }
+
+        // ── 定时任务（控制台）。agent token 默认拒绝（不在白名单前缀里），AI 只能走下面 /api/socialV2/schedule ──
+        if (url.pathname === '/api/scheduler' || url.pathname.startsWith('/api/scheduler/')) {
+          const sub = url.pathname.slice('/api/scheduler'.length);
+          const fail = (error, code = 400) => sendJson({ ok: false, error: error?.message ?? String(error) }, code);
+          try {
+            if (req.method === 'GET' && (sub === '' || sub === '/')) {
+              const snap = scheduler.snapshot();
+              // 可选的发送对象：管理员私聊 + 白名单好友 + 白名单群（群名尽量带上，方便勾选）
+              const listOf = (kind) => (cfg.allow?.[kind] ?? cfg.allow?.[kind + 's'] ?? []).map(String);
+              const targets = [{ key: schedulerOwnerKey(), label: '管理员私聊', kind: 'owner' }];
+              for (const id of listOf('private')) if (`private:${id}` !== schedulerOwnerKey()) targets.push({ key: `private:${id}`, label: `好友 ${id}`, kind: 'private' });
+              for (const id of listOf('group')) targets.push({ key: `group:${id}`, label: `群 ${id}`, kind: 'group' });
+              sendJson({ ok: true, ...snap, targets, writable: scheduler.isWritable(), mode: currentMode });
+              return;
+            }
+            const body = req.method === 'GET' ? {} : await readBody();
+            if (req.method === 'POST' && sub === '/settings') { sendJson({ ok: true, settings: scheduler.updateSettings(body, { source: 'console' }) }); return; }
+            if (req.method === 'POST' && sub === '/preview') {
+              const pv = scheduler.preview(body, Math.min(10, Number(body.count) || 5));
+              // 「叫 AI 来说」且没设「静默时段内照常执行」：落在定时静默里的那几次会被跳过，提前标出来
+              const targets = Array.isArray(body.targets) ? body.targets.map(String) : [];
+              const affected = targets.some((k) => k !== schedulerOwnerKey() || silence.config().options.includeOwnerPrivate);
+              if (body.kind === 'ai' && !body.runDuringSilence && silence.config().options.pauseAiTasks && affected) {
+                for (const x of pv.next) { const w = silence.activeAt(x.at); if (w) x.silenced = w.range.name; }
+              }
+              sendJson({ ok: true, ...pv });
+              return;
+            }
+            if (req.method === 'POST' && sub === '/tasks') { sendJson({ ok: true, task: scheduler.createTask(body, { source: 'console' }) }); return; }
+            const m = /^\/tasks\/(\d+)(\/run|\/enable|\/disable)?$/.exec(sub);
+            if (m) {
+              const id = Number(m[1]);
+              if (req.method === 'PATCH' && !m[2]) { sendJson({ ok: true, task: scheduler.updateTask(id, body, { source: 'console' }) }); return; }
+              if (req.method === 'DELETE' && !m[2]) { sendJson({ ok: true, task: scheduler.deleteTask(id, { source: 'console' }) }); return; }
+              if (req.method === 'POST' && m[2] === '/run') { sendJson({ ok: true, ...(await scheduler.runNow(id, { source: 'console' })) }); return; }
+              if (req.method === 'POST' && (m[2] === '/enable' || m[2] === '/disable')) { sendJson({ ok: true, task: scheduler.setEnabled(id, m[2] === '/enable', { source: 'console' }) }); return; }
+            }
+            sendJson({ ok: false, error: '不存在的定时任务接口' }, 404);
+          } catch (error) {
+            fail(error);
+          }
+          return;
+        }
+
         // ── 安全拦截通知设置 ─────────────────────────────────────────────────
         if (req.method === 'GET' && url.pathname === '/api/security') {
           sendJson({
@@ -5168,6 +5428,11 @@ async function main() {
             try { await syncStickerLibrary(false); } catch {}
           }
           const roleState = readRoleState();
+          const roleHintForPrompt = currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint();
+          // AI 自己读了卡：记下这一版（只认带令牌的调用，控制台查看不算）
+          if (req.headers['x-agent-token'] && currentMode === 'reserved2' && state.sessions[key]) {
+            roleRefresh.markSeen(key, state.sessions[key], roleFingerprint(roleState.role ?? null, roleHintForPrompt));
+          }
           const toolMap = {
             getPrompt: 'qq_get_prompt',
             getUnread: 'qq_get_unread_messages',
@@ -5202,6 +5467,7 @@ async function main() {
             personProfile: 'qq_get_person / qq_note_person',
             requestMode: 'qq_request_mode_change',
             crossGroup: 'qq_cross_group_query',
+            schedule: 'qq_schedule_create / qq_schedule_list / qq_schedule_update / qq_schedule_delete',
             ownerRelay: 'qq_ask_group_session',
             ownerGroupAccess: 'qq_owner_peek_group / qq_owner_group_rule'
           };
@@ -5221,7 +5487,7 @@ async function main() {
               userId: selfUserId || null,
               line: selfIdentityTextV2().trim() || null
             },
-            role: { name: roleState.role ?? null, hint: currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint() },
+            role: { name: roleState.role ?? null, hint: roleHintForPrompt },
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
               send: cfg.socialV2?.send ?? {},
@@ -6916,6 +7182,60 @@ async function main() {
           }
           return;
         }
+        // ── 定时任务（AI 工具 qq_schedule_*）：只在管理员私聊会话里能用 ─────────────────────────
+        // 能做的：登记 / 列出 / 暂停 / 删除发给管理员私聊的任务；开了 allowAiGroup 时可以登记发往群和好友的任务，
+        // 但建成「待你确认」的暂停状态。改不了总开关和安全限制。每次登记、修改，桥接都另发一条确认给管理员。
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/schedule') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const token = String(req.headers['x-agent-token'] ?? '');
+          if (!token || !agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (!v2ToolEnabled('schedule')) { sendJson({ ok: false, error: '工具未启用：qq_schedule_*' }, 403); return; }
+          if (key !== schedulerOwnerKey()) { sendJson({ ok: false, error: '定时任务只能在管理员的私聊里登记；群里不能用。请直接告诉对方做不到，不要口头答应。' }, 403); return; }
+          const snap = scheduler.snapshot();
+          if (!snap.settings.enabled) { sendJson({ ok: false, error: '管理员关闭了定时任务功能。请直接告诉管理员现在做不到，不要口头答应。' }, 403); return; }
+          const action = String(body.action ?? '');
+          const notifyOwner = (text) => void sendOwnerDirect(text);
+          try {
+            if (action === 'list') {
+              sendJson({ ok: true, tasks: scheduler.listTasks({ forAi: true }).map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, pendingConfirm: !!t.pendingConfirm, schedule: t.scheduleText, next: t.nextRunText, kind: t.kind, content: t.kind === 'ai' ? t.instruction : t.text, targets: t.targets })), timezone: snap.settings.timezone });
+              return;
+            }
+            if (action === 'create') {
+              const input = { ...(body.task ?? {}) };
+              if (!Array.isArray(input.targets) || !input.targets.length) input.targets = [schedulerOwnerKey()];
+              const t = scheduler.createTask(input, { source: 'owner-chat-ai' });
+              const preview = scheduler.preview({ schedule: t.schedule, timezone: t.timezone, seed: t.seed }, 3).next.map((x) => x.text).join('、');
+              notifyOwner(`📌 AI 帮你登记了定时任务 #${t.id}「${t.name}」：${t.scheduleText}\n${t.kind === 'ai' ? '叫 AI：' + t.instruction : '文字：' + t.text}\n发给：${t.targets.join('、')}\n接下来：${preview || '（没有了）'}\n${t.pendingConfirm ? `⚠️ 这个任务要发到群 / 其他好友，已先暂停：确认无误请发 /remind on ${t.id} 或在控制台打开。` : `不对的话发 /remind del ${t.id} 删除。`}`);
+              sendJson({ ok: true, task: { id: t.id, name: t.name, schedule: t.scheduleText, next: t.nextRunText, pendingConfirm: !!t.pendingConfirm }, upcoming: preview, note: t.pendingConfirm ? '已登记，但要发到群 / 其他好友，需要管理员确认后才会启用；请如实告诉管理员。' : '已登记成功，桥接会到点执行；可以如实告诉管理员。' });
+              return;
+            }
+            if (action === 'update') {
+              const t = scheduler.updateTask(Number(body.id), body.task ?? {}, { source: 'owner-chat-ai' });
+              notifyOwner(`✏️ AI 修改了定时任务 #${t.id}「${t.name}」：${t.scheduleText}${t.enabled ? '' : '（暂停中）'}`);
+              sendJson({ ok: true, task: { id: t.id, name: t.name, schedule: t.scheduleText, next: t.nextRunText, enabled: t.enabled, pendingConfirm: !!t.pendingConfirm } });
+              return;
+            }
+            if (action === 'pause' || action === 'resume') {
+              const t = scheduler.setEnabled(Number(body.id), action === 'resume', { source: 'owner-chat-ai' });
+              notifyOwner(`${action === 'resume' ? '▶️' : '⏸'} AI ${action === 'resume' ? '恢复' : '暂停'}了定时任务 #${t.id}「${t.name}」`);
+              sendJson({ ok: true, task: { id: t.id, enabled: t.enabled, next: t.nextRunText } });
+              return;
+            }
+            if (action === 'delete') {
+              const t = scheduler.deleteTask(Number(body.id), { source: 'owner-chat-ai' });
+              notifyOwner(`🗑 AI 删除了定时任务 #${t.id}「${t.name}」`);
+              sendJson({ ok: true, deleted: t.id });
+              return;
+            }
+            sendJson({ ok: false, error: 'action 只能是 create / list / update / pause / resume / delete' }, 400);
+          } catch (error) {
+            sendJson({ ok: false, error: `${error?.message ?? error}。没有登记成功，请如实告诉管理员，不要口头答应。` }, 400);
+          }
+          return;
+        }
+
         // ── 合并转发消息查询端点（MCP qq_get_forward_msg 走这里） ────────────
         if (req.method === 'GET' && url.pathname === '/api/socialV2/forward-message') {
           const key = String(url.searchParams.get('key') ?? '').trim();
@@ -8701,7 +9021,9 @@ async function main() {
   // 静默模式：除 owner 私聊外，不发送任何在途 AI 回复。
   function shouldBlockSilentReply(key) {
     const roleState = readRoleState();
-    return roleState.mode === 'silent' && key !== `private:${String(cfg.ownerQQ ?? '')}`;
+    if (roleState.mode === 'silent' && key !== `private:${String(cfg.ownerQQ ?? '')}`) return true;
+    // 定时静默：时段内同样不往外发（管理员私聊默认不受影响；「照常执行」的定时任务临时放行）
+    return !!scheduledSilenceFor(key);
   }
 
   // 统一出站消息：先完整文本审计，再发送。返回是否真的发出。
@@ -9963,15 +10285,18 @@ async function main() {
     let wakeState;
     let wakeToken;
     let wakeSnapshot;
+    let roleFpAtBuild = null;
     if (opts.wakeReason) {
       if (wakeBlocked()) return skipWake();
       // Build only after session creation: retries may rotate the token, and an
       // offline queue may have received more messages since this wake was queued.
       wakeState = getSocialV2State(key);
       wakeToken = wakeState.agentToken;
+      roleFpAtBuild = opts.wakeReason === 'bootstrap' ? null : currentRoleFingerprintV2();
       promptText = buildWakePromptV2(key, opts.wakeReason);
       // 管理员托付在这次最终构建里已经写进提示词，取走，避免下次唤醒重复交代。
       ownerRelayStore.take(key);
+      scheduledNotes.take(key);
       wakeSnapshot = buildWakeSnapshotV2(key);
       if (wakeSnapshot) {
         promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_unread_messages(afterSeq=readThroughSeq) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
@@ -9998,6 +10323,8 @@ async function main() {
       const d = await reportAgentError(key, accepted.result.error, '消息未被接受', { silent: !!opts.silent });
       return { ok: false, error: `${d.code}: ${d.detail}` };
     }
+    // 这次唤醒提示已经带着（或本来就是）当前这一版角色卡，记下来，下次不再重复给
+    if (roleFpAtBuild) roleRefresh.markSeen(key, sessionId, roleFpAtBuild);
     if (wakeSnapshot && isCurrentSession(key, sessionId)
         && socialV2.conversations.get(canonicalV2Key(key)) === wakeState
         && wakeState.agentToken === wakeToken) {
@@ -11049,11 +11376,48 @@ async function main() {
 
   // 管理员托付（方案 C）：只要目标群会话有待处理的托付，任何原因的唤醒都会带上它；
   // 托付在最终投递时才取走（见 deliverPrompt 里的 ownerRelayStore.take）。
+  /** 当前角色卡（二代注入的那份文字）的指纹。 */
+  function currentRoleFingerprintV2() {
+    return roleFingerprint(readRoleState().role ?? null, currentRoleHintV2());
+  }
+
+  /** 这次唤醒要不要带「角色卡已更新」块；要的话返回块文字，否则 ''。 */
+  function roleRefreshBlockV2(key, reason) {
+    if (reason === 'bootstrap') return '';
+    const sid = state.sessions[key];
+    if (!sid || !roleRefresh.needsRefresh(key, sid, currentRoleFingerprintV2())) return '';
+    return buildRoleRefreshBlock({ name: readRoleState().role ?? null, hint: currentRoleHintV2() });
+  }
+
+  /**
+   * 控制台切换人格选了「立即」：对当前模式下还没读到新卡的二代会话各安排一次 roleRefresh 唤醒。
+   * 定时静默里的会话照旧不唤醒（下一次唤醒时再带上新卡）。
+   */
+  function refreshRoleNowV2() {
+    if (currentMode !== 'reserved2' || cfg.socialV2?.enabled === false || socialV2.paused) return { woke: [], skipped: 'notV2' };
+    const fp = currentRoleFingerprintV2();
+    const keys = roleRefresh.stale(state.sessions, fp).filter((k) => isSessionAllowedInCurrentMode(k));
+    const woke = [];
+    for (const k of keys) {
+      if (silence.config().options.stopWakes && scheduledSilenceFor(k)) continue;
+      scheduleWakeV2(k, 'roleRefresh');
+      woke.push(k);
+    }
+    return { woke, pending: keys.length - woke.length };
+  }
+
   function buildWakePromptV2(key, reason) {
     const relays = ownerRelayStore.peek(key);
     if (reason === 'ownerRelay' && !relays.length) reason = '管理员托付已过期，按平常判断即可';
-    const text = buildWakePromptV2Core(key, reason);
-    return relays.length ? `${text}\n\n${ownerRelayPromptBlock(relays)}` : text;
+    // 定时任务的说明和托付一样：任何原因的唤醒都带上，最终投递时才取走（见 deliverPrompt 里的 scheduledNotes.take）
+    const notes = scheduledNotes.peek(key);
+    if (reason === 'scheduled' && !notes.length) reason = '定时任务的说明已过期，按平常判断即可';
+    let text = buildWakePromptV2Core(key, reason);
+    // 角色卡换了 / 改了、这个会话还没读到：把新卡全文放在最前面（引导唤醒会自己调用 qq_get_prompt，不重复给）
+    const roleBlock = roleRefreshBlockV2(key, reason);
+    if (roleBlock) text = `${roleBlock}\n\n${text}`;
+    if (relays.length) text = `${text}\n\n${ownerRelayPromptBlock(relays)}`;
+    return notes.length ? `${text}\n\n${scheduledPromptBlock(notes)}` : text;
   }
 
   // r4：机器人自己的身份（昵称 + QQ 号）。**必须显式写进 prompt**（上游 issue #29）：
@@ -11139,6 +11503,15 @@ async function main() {
       const category = String(reason).split(':')[1] || '';
       return `${base}【唤醒】${key}\n原因：有人加入了本群（见未读里的 [入群] 事件）。\n${joinWakeInstruction(category)}\n看完再决定：想打招呼就自然说一句；不想就安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
     }
+    if (reason === 'roleRefresh') {
+      return `${base}【唤醒】${key}\n原因：管理员更新了你的角色卡（见最上面的【角色卡已更新】）。这次唤醒主要是让你读到新卡。\n看一眼未读：有该回的就按新卡的语气自然地回；没有就直接安静收尾（qq_mark_read 或 qq_set_wake_config）。不要为了换卡专门发言，也不要提起换卡这件事。`;
+    }
+    if (reason === 'silenceEnded') {
+      return `${base}【唤醒】${key}\n原因：定时静默刚结束；静默期间有人直接找过你（@、叫名字、提问、拍一拍或私聊），消息都在未读里。\n先看未读，挑仍然值得回应的自然地回；已经过去很久、话题早就变了的不用硬接。`;
+    }
+    if (reason === 'scheduled') {
+      return `${base}【唤醒】${key}\n原因：管理员事先登记的定时任务到点了（见文末【定时任务】）。\n先看看会话里此刻的情况，再用发送工具自然地完成它；完成后照常收尾（qq_mark_read / qq_set_wake_config）。`;
+    }
     if (reason === 'ownerRelay') {
       return `${base}【唤醒】${key}\n原因：管理员在私聊里托付你在本群做一件事（见文末【管理员托付】）。\n先看看群里此刻在聊什么，再决定怎么开口最自然。`;
     }
@@ -11161,8 +11534,24 @@ async function main() {
   async function sendWakePromptV2(key, reason) {
     if (cfg.socialV2?.enabled === false) return;
     if (currentMode !== 'reserved2' || socialV2.paused) return;
+    // 定时静默：时段内一律不唤醒（被 @、主动冒泡、睡醒、回复检查），省 token。
+    // 定时任务自己已经按「跳过 / 照常执行」判断过，所以 scheduled 原因放行。
+    if (reason !== 'scheduled' && silence.config().options.stopWakes) {
+      const sw = scheduledSilenceFor(key);
+      if (sw) {
+        const base = String(reason ?? '').split(':')[0];
+        if (['atMention', 'nameMention', 'question', 'poke', 'private', 'speaker', 'ownerRelay'].includes(base)) getSocialV2State(key).silenceMissedDirect = true;
+        log(`[reserved2] ${silenceReason(sw)}，不唤醒 ${key}（${reason}）`);
+        return;
+      }
+    }
     if (!isSessionAllowedInCurrentMode(key)) {
       log(`[reserved2] 跳过唤醒 ${key}（${reason}）：会话已不在当前模式允许范围内`);
+      return;
+    }
+    // 「立即读卡」唤醒排队期间会话可能已经读到新卡（AI 自己调了 qq_get_prompt / 别的唤醒带上了），不用再叫
+    if (reason === 'roleRefresh' && !roleRefresh.needsRefresh(key, state.sessions[key], currentRoleFingerprintV2())) {
+      log(`[reserved2] ${key} 已读到当前角色卡，跳过读卡唤醒`);
       return;
     }
     const st = getSocialV2State(key);
@@ -11374,9 +11763,11 @@ async function main() {
     nameMention: 70,
     keyword: 60,
     anyMessage: 50,
+    scheduled: 92,
     replyCheck: 40,
     timeout: 30,
-    proactiveCheck: 20
+    proactiveCheck: 20,
+    roleRefresh: 25
   };
 
   // 唤醒原因可能带子类型（如 keyword:小鲸鱼、speaker:昵称），取冒号前的基名计算优先级。
@@ -11388,7 +11779,7 @@ async function main() {
   // 与「未读消息」无关的唤醒原因（定时器/引导）。这些原因在会话繁忙时被暂存后，
   // 不能用「unread 里还有没有对应 seq」来判断是否还要补发 —— 那一轮很可能已经把
   // 未读全部标读了，结果就是 timeout 定时器被静默丢掉、会话停在无定时器的静默态。
-  const TIMER_WAKE_REASONS = new Set(['timeout', 'replyCheck', 'proactiveCheck', 'bootstrap', 'admin']);
+  const TIMER_WAKE_REASONS = new Set(['timeout', 'replyCheck', 'proactiveCheck', 'bootstrap', 'admin', 'scheduled', 'silenceEnded', 'roleRefresh']);
   function isTimerWakeReason(reason) {
     return TIMER_WAKE_REASONS.has(String(reason ?? '').split(':')[0]);
   }
@@ -11690,6 +12081,14 @@ async function main() {
       const ownerText = (await segmentsToText(event.message ?? [], { includeReply: false })).trim();
       if (ownerText) {
         if (await tryHandleApprovalReply(key, ownerText, true)) { rememberAdminMessageId(event.message_id ?? event.msg_id); return; }
+        // /remind 定时任务命令：桥接直接处理，不交给模型
+        const remindReply = await handleRemindCommand(ownerText);
+        if (remindReply != null) {
+          rememberAdminMessageId(event.message_id ?? event.msg_id);
+          appendActivity(`${key} 管理通道定时任务命令：${ownerText.slice(0, 40)}`);
+          await sendOwnerDirect(remindReply);
+          return;
+        }
         const r = await ext.handleOwnerText(ownerText, { say: sayToGroup });
         if (r.handled) {
           rememberAdminMessageId(event.message_id ?? event.msg_id);
@@ -11772,6 +12171,20 @@ async function main() {
       return;
     }
 
+    // 定时静默：消息照样记下（不唤醒 AI），恢复后 AI 能补看；有人直接找 AI 的话，结束时补一次唤醒
+    {
+      const sw = scheduledSilenceFor(key);
+      if (sw && silence.config().options.stopWakes) {
+        const directed = kind === 'private' || quoteTargetIsSelf || (Array.isArray(event.message) && event.message.some((s) => s?.type === 'at' && event.self_id != null && String(s.data?.qq) === String(event.self_id)));
+        if (currentMode === 'reserved2' && silence.config().options.recordMessages) {
+          const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
+          appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, mergeForwardIds(extractForwardIds(event.message ?? []), quotedForwardIds));
+          if (directed) getSocialV2State(key).silenceMissedDirect = true;
+        }
+        appendActivity(`${key}（${silenceReason(sw)}）${isOwner ? '管理员' : '群友 ' + event.user_id}：${textContent.slice(0, 80)}`);
+        return;
+      }
+    }
     // 静默模式：群友消息不投递给 agent（只记录）；管理员消息照常
     if (roleState.mode === 'silent' && !isOwner) {
       appendActivity(`${key}（静默模式）群友 ${event.user_id}：${textContent.slice(0, 80)}`);

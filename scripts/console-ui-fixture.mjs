@@ -7,6 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { roleCharStats, roleSectionReport } from '../src/role-card.js';
 import { pickBucketMs } from '../src/token-ledger.js';
 import { manualDirCommand } from '../src/state-acl.mjs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
+import { createScheduler } from '../src/scheduler/engine.js';
+import { CN_HOLIDAYS, resolvePriceTable } from '../src/model-prices.js';
+import { createSilenceSchedule, peakPresetRanges } from '../src/silence-schedule.js';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const timestamp = '2026-09-20T08:30:00.000Z';
@@ -365,6 +371,87 @@ function fixtureDshModel(provider, model) {
   return FIXTURE_DSH_PROVIDERS.find((p) => p.id === provider)?.models.find((m) => m.id === model) || null;
 }
 
+// ── 定时任务夹具（假数据；发送不会真的发出去） ──────────────────────────────
+let fixtureScheduler = null;
+function getFixtureScheduler() {
+  if (fixtureScheduler) return fixtureScheduler;
+  const dir = mkdtempSync(joinPath(tmpdir(), 'qqb-fixture-scheduler-'));
+  fixtureScheduler = createScheduler({
+    file: joinPath(dir, 'scheduler.json'),
+    deliver: async () => ({ status: 'sent', reason: '离线演示，没有真的发送' }),
+    validateTarget: (k) => (/^(group|private):\d+$/.test(k) ? null : `发送对象「${k}」格式不对`),
+    ownerKey: () => 'private:100001',
+    holidays: CN_HOLIDAYS,
+  });
+  fixtureScheduler.createTask({ name: '早安', kind: 'text', text: '早上好', schedule: { type: 'daily', times: ['06:00'] }, targets: ['private:100001'] }, { source: 'console' });
+  fixtureScheduler.createTask({ name: '随机陪聊', kind: 'ai', instruction: '随便跟我聊一句，或者发个可爱的表情包', schedule: { type: 'dailyRandom', count: 3, window: ['09:00', '22:00'], minGapMin: 60 }, targets: ['private:100001'] }, { source: 'owner-chat-ai' });
+  const t3 = fixtureScheduler.createTask({ name: '周报提醒', kind: 'ai', instruction: '提醒大家交周报，语气轻松一点', schedule: { type: 'workdays', times: ['18:00'] }, targets: ['group:123456789', 'group:100003'], maxRuns: 8 }, { source: 'console' });
+  fixtureScheduler.setEnabled(t3.id, false, { source: 'console' });
+  return fixtureScheduler;
+}
+// ── 定时静默夹具（真实模块 + 临时文件；演示数据：工作日下午高峰 + 周末深夜） ──────────────
+let fixtureSilence = null;
+function getFixtureSilence() {
+  if (fixtureSilence) return fixtureSilence;
+  const dir = mkdtempSync(joinPath(tmpdir(), 'qqb-fixture-silence-'));
+  fixtureSilence = createSilenceSchedule({ file: joinPath(dir, 'silence.json'), holidays: CN_HOLIDAYS });
+  fixtureSilence.update({
+    enabled: true, timezone: 'Asia/Shanghai',
+    ranges: [
+      { name: '上午高峰', start: '09:00', end: '12:00', days: 'workdays', skipHolidays: true },
+      { name: '下午高峰', start: '14:00', end: '18:00', days: 'workdays', skipHolidays: true },
+      { name: '深夜', enabled: false, start: '01:00', end: '08:00', days: 'custom', weekdays: [6, 7] },
+    ],
+  });
+  return fixtureSilence;
+}
+async function handleFixtureSilence(req, method, json, requests, state) {
+  const sil = getFixtureSilence();
+  if (method === 'POST') {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+    requests.push({ method, path: '/api/silence', body });
+    try { sil.update(body); } catch (error) { return json({ ok: false, error: error?.message ?? String(error) }, 400); }
+  }
+  return json({ ok: true, ...sil.status(), manual: state.roleMode === 'silent', peakPreset: peakPresetRanges(resolvePriceTable()), writable: true });
+}
+
+async function handleFixtureScheduler(req, method, path, json, requests) {
+  const sch = getFixtureScheduler();
+  const sub = path.slice('/api/scheduler'.length);
+  let body = {};
+  if (method !== 'GET') {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+    requests.push({ method, path, body });
+  }
+  try {
+    if (method === 'GET' && (sub === '' || sub === '/')) {
+      return json({ ok: true, ...sch.snapshot(), writable: true, mode: 'reserved2', targets: [
+        { key: 'private:100001', label: '管理员私聊', kind: 'owner' },
+        { key: 'group:123456789', label: '群 123456789', kind: 'group' },
+        { key: 'group:100003', label: '群 100003', kind: 'group' },
+      ] });
+    }
+    if (method === 'POST' && sub === '/settings') return json({ ok: true, settings: sch.updateSettings(body, { source: 'console' }) });
+    if (method === 'POST' && sub === '/preview') return json({ ok: true, ...sch.preview(body, 5) });
+    if (method === 'POST' && sub === '/tasks') return json({ ok: true, task: sch.createTask(body, { source: 'console' }) });
+    const m = /^\/tasks\/(\d+)(\/run|\/enable|\/disable)?$/.exec(sub);
+    if (m) {
+      const id = Number(m[1]);
+      if (method === 'PATCH' && !m[2]) return json({ ok: true, task: sch.updateTask(id, body, { source: 'console' }) });
+      if (method === 'DELETE' && !m[2]) return json({ ok: true, task: sch.deleteTask(id, { source: 'console' }) });
+      if (method === 'POST' && m[2] === '/run') return json({ ok: true, ...(await sch.runNow(id, { source: 'console' })) });
+      if (method === 'POST') return json({ ok: true, task: sch.setEnabled(id, m[2] === '/enable', { source: 'console' }) });
+    }
+    return json({ ok: false, error: '不存在的定时任务接口' }, 404);
+  } catch (error) {
+    return json({ ok: false, error: error?.message ?? String(error) }, 400);
+  }
+}
+
 export async function startConsoleFixture({ port = 0, original = false, htmlPath, logWrites = false } = {}) {
   const file = htmlPath || resolve(projectRoot, original ? 'scripts/fixtures/console.before.html' : 'public/console.html');
   await readFile(file); // Fail early rather than displaying a broken preview.
@@ -390,6 +477,9 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
       if (method === 'GET' && path === '/__fixture/requests') return json({ requests, unknownRequests });
       if (method === 'GET' && path === '/__fixture/info') return json({ offline: true, htmlPath: file });
       if (!path.startsWith('/api/')) return json({ ok: false, error: 'Offline fixture route not found' }, 404);
+      // 定时任务：直接用真实的调度引擎（临时数据文件 + 假发送），预览里看到的规则计算与真实一致
+      if (path === '/api/scheduler' || path.startsWith('/api/scheduler/')) return handleFixtureScheduler(req, method, path, json, requests);
+      if (path === '/api/silence') return handleFixtureSilence(req, method, json, requests, state);
 
       let body = {};
       if (method !== 'GET') {
@@ -544,9 +634,9 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
       if (method === 'POST') {
         switch (path) {
           case '/api/mode': state.mode = body.mode; state.closedAgentPreset = body.closedAgentPreset; return json({ ok: true, dshSynced: true });
-          case '/api/role': state.role = body.role; return json({ ok: true });
+          case '/api/role': state.role = body.role; return json({ ok: true, role: body.role, refresh: body.apply === 'immediate' ? { apply: 'immediate', mode: 'reserved2', woke: 2, pending: 0 } : { apply: 'nextWake', mode: 'reserved2', woke: 0, pending: 3 } });
           case '/api/roles/create': state.roles.push(body.name); state.roleContents[body.name] = body.content ?? ''; return json({ ok: true, role: body.name, warnings: [] });
-          case '/api/roles/update': state.roleContents[body.name] = body.content ?? ''; return json({ ok: true, role: body.name, chars: String(body.content ?? '').length, warnings: [] });
+          case '/api/roles/update': state.roleContents[body.name] = body.content ?? ''; return json({ ok: true, role: body.name, chars: String(body.content ?? '').length, warnings: [], refresh: body.name !== state.role ? { apply: body.apply || 'nextWake', notActive: true } : body.apply === 'immediate' ? { apply: 'immediate', mode: 'reserved2', woke: 2, pending: 0 } : { apply: 'nextWake', mode: 'reserved2', woke: 0, pending: 3 } });
           case '/api/roles/rename': {
             const idx = state.roles.indexOf(body.from);
             if (idx >= 0) state.roles[idx] = body.to;

@@ -1,9 +1,9 @@
-# 测试说明（v0.3.0）
+# 测试说明
 
 ## 离线回归（不需要 QQ、SnowLuma、DSH 或网络）
 
 ```powershell
-npm run test:audit      # 60 个脚本：原版与各版本新增的离线回归，清单见 scripts/test-audit.mjs；macOS 上 test-console-encoding 是已知失败（只适用于 Windows）
+npm run test:audit      # 63 个脚本：原版与各版本新增的离线回归，清单见 scripts/test-audit.mjs；macOS 上 test-console-encoding 是已知失败（只适用于 Windows）
 npm run test:v030       # 只跑 v0.3.0 的四个新测试
 ```
 
@@ -29,6 +29,9 @@ npm run test:v030       # 只跑 v0.3.0 的四个新测试
 | `scripts/test-dsh-model.mjs` | 控制台选择 DSH 模型：档位规范化与目录硬校验、selectModel 参数（无档位不带字段）、目录缓存、看图能力与图片降级成文字、第三方 / 价格 / off 提示；桥接接口写 config.json 并热生效、目录不可用拒绝保存、AI 令牌拒绝 |
 | `scripts/test-quote-forward.mjs` | 引用合并转发：慢取缓存（并发去重、负缓存、后台完成后命中）、收消息时引用解析最多等几秒不卡住、引用里的转发 id 登记为本会话可见（跨群不登记）、消息详情对加载中的 id 明确提示、读合并转发走缓存与长超时、接口平台只给 get_msg / get_forward_msg 放宽超时、发送引用时「加载中」不算确认归属 |
 | `scripts/test-mode-handover.mjs` | 切换 agent 等级不失忆：哪些会话能休眠、休眠表清洗、恢复 / 保留 / 归档判定；二代 → agent L2 → 回落的端到端（聊天会话不归档并原样复用、令牌作废、agent 会话第一条消息带私聊交接且不含群聊内容、回落时高权限会话归档、恢复后群只收到休眠提示）；过期 / 模式不同 / `/reset` / 关掉开关时归档；L1→L2 高权限会话不休眠；确认码与管理命令不进交接记录 |
+| `scripts/test-scheduler.mjs` | 定时任务：按任务时区计算（含夏令时）、各种重复方式与边界日期、随机规则确定且在时间段内、不合法规则的提示；引擎的限额 / 免打扰 / 错过补发 / 满次停用 / 持久化 / 读坏不覆盖；AI 改不了开关和限制、只能发给管理员私聊；`/remind` 解析；桥接端到端（/remind 不进模型、到点发文字、AI 来说带上任务、AI 工具只在管理员私聊并另发确认、控制台接口拒绝 agent token）；控制台页面接线 |
+| `scripts/test-silence-schedule.mjs` | 定时静默：时间段校验、哪些天（每天 / 工作日 / 周末 / 自选 + 跳过节假日）、跨午夜按开始那天、DeepSeek 高峰预设、临时恢复到这一段结束、持久化；桥接端到端（静默时不唤醒、消息照记、管理员私聊不受影响、定时任务跳过 / 照常执行、固定文字照发、预览标出会跳过、手动恢复正常、结束补唤醒、接口拒绝 agent token）；控制台面板 |
+| `scripts/test-role-refresh.mjs` | 人格切换 / 修改后二代会话重新读卡：角色卡指纹、读卡记录按会话 + 指纹（换会话也算没读过）、持久化 0600 且不存卡片内容；下一次唤醒把新卡放最前面、投递后不再重复、引导唤醒不带；「立即」只唤醒没读到新卡的会话；`qq_get_prompt` 记为已读；`/api/role` 与 `/api/roles/update` 的生效方式、改非当前人格不唤醒 |
 | `scripts/test-agent-preset-patches.mjs` | preset 源与 bundle patch 不漂移（含新 preset） |
 
 原版测试在本仓库里做过的调整（都是让测试不依赖开发机环境，没有放宽断言）：
@@ -41,7 +44,7 @@ npm run test:v030       # 只跑 v0.3.0 的四个新测试
 用真实 DSH 安装包做工具名对账（可选，仍然离线）：
 
 ```powershell
-$env:DSH_INSTALL_MODULES = "<装了 @deepseek-ai/dsh@0.2.0-rc.2 的目录>\node_modules"
+$env:DSH_INSTALL_MODULES = "<装了 @deepseek-ai/dsh（0.2.0-rc.2 或 0.2.1）的目录>\node_modules"
 node scripts/test-preset-local-tools.mjs
 ```
 

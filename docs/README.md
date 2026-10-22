@@ -2,7 +2,7 @@
 
 > 根目录只留 `README.md` / `README.en.md` / `RULES.md`，以及 v0.3.0 起的发布类文档 `CHANGELOG.md` / `NOTICE.md`；其余全部在本目录下。
 >
-> **v0.3.0 增强版新增**：[DSH_DEPLOYMENT.md](DSH_DEPLOYMENT.md)（给部署 agent 的完整部署说明）· [guides/CONTINUITY.md](guides/CONTINUITY.md) · [guides/ADMIN_CHANNEL.md](guides/ADMIN_CHANNEL.md) · [guides/CONFIGURATION.md](guides/CONFIGURATION.md) · [guides/TESTING.md](guides/TESTING.md) · [release/RELEASE_NOTES_v0.3.0.md](release/RELEASE_NOTES_v0.3.0.md) · [release/PUBLISHING.md](release/PUBLISHING.md) · **v0.4.0**：[guides/CONTROL_CENTER.md](guides/CONTROL_CENTER.md) · [release/RELEASE_NOTES_v0.4.0.md](release/RELEASE_NOTES_v0.4.0.md) · **v1.0.0**：[release/RELEASE_NOTES_v1.0.0.md](release/RELEASE_NOTES_v1.0.0.md)（Windows + macOS、接口平台、NapCat） · **v1.0.1**：[release/RELEASE_NOTES_v1.0.1.md](release/RELEASE_NOTES_v1.0.1.md)（新增 Linux、SnowLuma 2.x）· **v1.0.2**：[release/RELEASE_NOTES_v1.0.2.md](release/RELEASE_NOTES_v1.0.2.md)（换 SnowLuma 目录前提醒迁移） · [release/RELEASE_NOTES_v1.0.3.md](release/RELEASE_NOTES_v1.0.3.md)（引用合并转发修复）
+> **v0.3.0 增强版新增**：[DSH_DEPLOYMENT.md](DSH_DEPLOYMENT.md)（给部署 agent 的完整部署说明）· [guides/CONTINUITY.md](guides/CONTINUITY.md) · [guides/ADMIN_CHANNEL.md](guides/ADMIN_CHANNEL.md) · [guides/CONFIGURATION.md](guides/CONFIGURATION.md) · [guides/TESTING.md](guides/TESTING.md) · [release/RELEASE_NOTES_v0.3.0.md](release/RELEASE_NOTES_v0.3.0.md) · [release/PUBLISHING.md](release/PUBLISHING.md) · **v0.4.0**：[guides/CONTROL_CENTER.md](guides/CONTROL_CENTER.md) · [release/RELEASE_NOTES_v0.4.0.md](release/RELEASE_NOTES_v0.4.0.md) · **v1.0.0**：[release/RELEASE_NOTES_v1.0.0.md](release/RELEASE_NOTES_v1.0.0.md)（Windows + macOS、接口平台、NapCat） · **v1.0.1**：[release/RELEASE_NOTES_v1.0.1.md](release/RELEASE_NOTES_v1.0.1.md)（新增 Linux、SnowLuma 2.x）· **v1.0.2**：[release/RELEASE_NOTES_v1.0.2.md](release/RELEASE_NOTES_v1.0.2.md)（换 SnowLuma 目录前提醒迁移） · [release/RELEASE_NOTES_v1.0.3.md](release/RELEASE_NOTES_v1.0.3.md)（切换不失忆、引用合并转发修复） · **v1.1.0**：[release/RELEASE_NOTES_v1.1.0.md](release/RELEASE_NOTES_v1.1.0.md)（定时任务、定时静默、人格切换即时生效） · [guides/SCHEDULER.md](guides/SCHEDULER.md) · [guides/SILENCE.md](guides/SILENCE.md)
 > 仓库目录结构与 `scripts/` 命名约定见 **[FOLDER_MAP.md](FOLDER_MAP.md)**。
 >
 > **状态标记**：✅ 仍然有效（按它做就对） · ⚠️ 部分过时（见备注） · 🗄️ 已被取代（保留作背景）
@@ -14,9 +14,11 @@
 | 文档 | 一句话说明 | 状态 |
 | --- | --- | --- |
 | [guides/PROJECT_GUIDE.md](guides/PROJECT_GUIDE.md) | **权威项目说明书**（113 KB / 1450+ 行）：架构、内外核划分、数据流、配置全解、安全机制、调试与改进指南，含 2026-08-20 ~ 2026-09-11 的逐轮更新记录 | ✅ **唯一权威版本**（另一份同名精简版已归档到 legacy，见下） |
-| [DSH_DEPLOYMENT.md](DSH_DEPLOYMENT.md) | **从零部署（Windows / macOS）**：版本要求、QQ 后端（SnowLuma / NapCat）准备、配置字段、setup-dsh、TOTP、无窗口启动控制中心 → 开启后端 → 接入桥接、状态检查、真实 QQ 验证清单、更新/备份/回滚、常见错误 | ✅ 部署首选 |
+| [DSH_DEPLOYMENT.md](DSH_DEPLOYMENT.md) | **从零部署（Windows / macOS / Linux）**：版本要求、QQ 后端（SnowLuma / NapCat）准备、配置字段、setup-dsh、TOTP、无窗口启动控制中心 → 开启后端 → 接入桥接、状态检查、真实 QQ 验证清单、更新/备份/回滚、常见错误 | ✅ 部署首选 |
 | [guides/CONTINUITY.md](guides/CONTINUITY.md) | v0.3.0 人际连续性：QQ 号认人、人物库结构、共享策略与可见性、入群事件、跨群协作、迁移、存储可靠性 | ✅ |
 | [guides/ADMIN_CHANNEL.md](guides/ADMIN_CHANNEL.md) | v0.3.0 owner 管理通道：权限分级、DSH rc.2 核实事实、命令、确认流程、TOTP 威胁边界、审批、自动回落、外部变更检测、审计 | ✅ 改动权限相关代码前必读 |
+| [guides/SCHEDULER.md](guides/SCHEDULER.md) | 定时任务（v1.1.0）：控制台页面、`/remind` 命令、AI 登记、重复方式、时区、安全限制与边界 | ✅ |
+| [guides/SILENCE.md](guides/SILENCE.md) | 定时静默（v1.1.0）：按时间段停掉 AI 省 token、和手动静默的区别、哪些天、DeepSeek 高峰预设、和定时任务的关系 | ✅ |
 | [guides/CONFIGURATION.md](guides/CONFIGURATION.md) | v0.3.0 新增配置字段与状态文件 | ✅ |
 | [guides/TESTING.md](guides/TESTING.md) | 离线回归清单与需要部署后验证的事项 | ✅ |
 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | DSH 端安装说明：`qq-chat` / `qq-chat-v2` preset 与三个 MCP server 怎么挂到目标设备的 DSH 上 | ✅ |

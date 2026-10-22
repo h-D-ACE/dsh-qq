@@ -293,7 +293,7 @@ async function legacyReadToolAllowed() {
   return String(status?.mode ?? '') === 'closed-agent';
 }
 
-const server = new McpServer({ name: 'snowluma-safe', version: '1.0.3' });
+const server = new McpServer({ name: 'snowluma-safe', version: '1.1.0' });
 
 // ── 工具开关必须在**注册期**生效，而不是只在校验期 ──────────────────────────
 //
@@ -348,6 +348,10 @@ const TOOL_CONFIG_FLAGS = {
   qq_get_person: 'personProfile',
   qq_note_person: 'personProfile',
   qq_request_mode_change: 'requestMode',
+  qq_schedule_create: 'schedule',
+  qq_schedule_list: 'schedule',
+  qq_schedule_update: 'schedule',
+  qq_schedule_delete: 'schedule',
   qq_cross_group_query: 'crossGroup',
   // v0.4.2（默认关闭；下方注册处另有 === true 判断）
   qq_ask_group_session: 'ownerRelay',
@@ -1442,6 +1446,110 @@ server.tool(
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `登记申请失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+// ── 定时任务（只在管理员私聊里可用）──────────────────────────────────────────
+// 时间由桥接按任务时区（默认北京时间）到点执行，不靠你记着。登记成功、桥接另发确认之前，不要答应「到点会发」。
+const scheduleSchema = z.object({
+  type: z.enum(['once', 'daily', 'weekly', 'workdays', 'monthly', 'monthlyWeekday', 'yearly', 'dates', 'everyNDays', 'interval', 'dailyRandom', 'monthlyRandom'])
+    .describe('重复方式：once 一次性 / daily 每天 / weekly 每周 / workdays 工作日 / monthly 每月几号 / monthlyWeekday 每月第几个周几 / yearly 每年 / dates 特殊日期 / everyNDays 每隔 N 天 / interval 每隔 N 分钟 / dailyRandom 每天随机几次 / monthlyRandom 每月随机几次'),
+  date: z.string().optional().describe('once：日期 YYYY-MM-DD（按任务时区）'),
+  time: z.string().optional().describe('once：时间 HH:mm'),
+  times: z.array(z.string()).optional().describe('daily / weekly / workdays / monthly / monthlyWeekday / yearly / everyNDays：时间列表 HH:mm'),
+  weekdays: z.array(z.number().int().min(1).max(7)).optional().describe('weekly：1=周一 … 7=周日'),
+  days: z.array(z.number().int()).optional().describe('monthly：几号（1~31，-1=最后一天）'),
+  nth: z.number().int().optional().describe('monthlyWeekday：第几个（1~5，-1=最后一个）'),
+  weekday: z.number().int().optional().describe('monthlyWeekday：周几（1~7）'),
+  dates: z.array(z.string()).optional().describe('yearly：MM-DD 列表'),
+  items: z.array(z.object({ date: z.string(), time: z.string() })).optional().describe('dates：[{date:"YYYY-MM-DD", time:"HH:mm"}]'),
+  every: z.number().int().optional().describe('everyNDays：每隔几天'),
+  everyMinutes: z.number().int().optional().describe('interval：每隔几分钟（≥10）'),
+  count: z.number().int().optional().describe('dailyRandom / monthlyRandom：次数'),
+  window: z.array(z.string()).optional().describe('dailyRandom / monthlyRandom / interval：时间段 ["09:00","22:00"]'),
+  minGapMin: z.number().int().optional().describe('随机次数之间至少隔几分钟'),
+  dayRange: z.array(z.number().int()).optional().describe('monthlyRandom：日期范围 [1,28]'),
+  startDate: z.string().optional().describe('开始日期 YYYY-MM-DD（含）'),
+  endDate: z.string().optional().describe('结束日期 YYYY-MM-DD（含）'),
+  excludeDates: z.array(z.string()).optional().describe('排除的日期 YYYY-MM-DD'),
+  excludeHolidays: z.boolean().optional().describe('跳过中国法定节假日'),
+});
+const scheduleTaskSchema = z.object({
+  name: z.string().optional().describe('简短名字，例如「早安」'),
+  kind: z.enum(['text', 'ai']).describe('text = 到点桥接直接发固定文字；ai = 到点唤醒你，由你按 instruction 自己组织语言发'),
+  text: z.string().optional().describe('kind=text：要发的文字'),
+  instruction: z.string().optional().describe('kind=ai：到点要你做的事，例如「随便发一个可爱的表情包」'),
+  schedule: scheduleSchema,
+  timezone: z.string().optional().describe('时区，默认用控制台设置的（通常是 Asia/Shanghai 北京时间）；管理员说的「六点」一般指北京时间'),
+  targets: z.array(z.string()).optional().describe('发给谁：默认只发给管理员私聊。发到群 / 其他好友需要管理员在控制台允许，并且登记后要管理员确认才启用'),
+  maxRuns: z.number().int().optional().describe('共执行几次后停止（可选）'),
+});
+
+server.tool(
+  'qq_schedule_create',
+  '只在管理员（ownerQQ）本人私聊里用：当管理员要你「每天几点 / 几小时后 / 每月几号……提醒我、给我发……」时，用它**登记**一个定时任务，由桥接到点执行（不用你记着）。'
+    + '必须等它返回成功再答应；失败或者你没有这个工具时，直接说做不到，**不要口头答应**「到时候发」。'
+    + '「六点」这类说法默认按北京时间理解；拿不准时间、次数或发给谁时先问清楚。返回里有接下来几次的具体时间，答应时照着说。',
+  {
+    key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+    token: z.string().describe('会话令牌'),
+    task: scheduleTaskSchema,
+  },
+  async ({ key, token, task }) => {
+    try {
+      const data = await agentApi('/api/socialV2/schedule', { method: 'POST', body: JSON.stringify({ key, action: 'create', task }), headers: { 'x-agent-token': token } });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `登记定时任务失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_schedule_list',
+  '只在管理员私聊里用：列出已登记的定时任务（编号、规则、下次时间、是否暂停 / 待确认）。管理员问「我设了哪些提醒」时用。',
+  { key: z.string().describe('会话 key（管理员私聊）'), token: z.string().describe('会话令牌') },
+  async ({ key, token }) => {
+    try {
+      const data = await agentApi('/api/socialV2/schedule', { method: 'POST', body: JSON.stringify({ key, action: 'list' }), headers: { 'x-agent-token': token } });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `读取定时任务失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_schedule_update',
+  '只在管理员私聊里用：修改、暂停或恢复一个定时任务。action=pause / resume 时只需要 id；action=update 时在 task 里给要改的字段。待管理员确认的任务你不能自己恢复。',
+  {
+    key: z.string().describe('会话 key（管理员私聊）'),
+    token: z.string().describe('会话令牌'),
+    id: z.number().int().describe('任务编号'),
+    action: z.enum(['update', 'pause', 'resume']).describe('update 修改 / pause 暂停 / resume 恢复'),
+    task: scheduleTaskSchema.partial().optional().describe('action=update 时要改的字段'),
+  },
+  async ({ key, token, id, action, task }) => {
+    try {
+      const data = await agentApi('/api/socialV2/schedule', { method: 'POST', body: JSON.stringify({ key, action, id, task: task ?? {} }), headers: { 'x-agent-token': token } });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `修改定时任务失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_schedule_delete',
+  '只在管理员私聊里用：删除一个定时任务（管理员说「不用提醒了」「取消那个」时）。',
+  { key: z.string().describe('会话 key（管理员私聊）'), token: z.string().describe('会话令牌'), id: z.number().int().describe('任务编号') },
+  async ({ key, token, id }) => {
+    try {
+      const data = await agentApi('/api/socialV2/schedule', { method: 'POST', body: JSON.stringify({ key, action: 'delete', id }), headers: { 'x-agent-token': token } });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `删除定时任务失败：${error?.message ?? error}` }], isError: true };
     }
   }
 );

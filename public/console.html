@@ -677,26 +677,16 @@ pre {
 #section-mode {
   order:0
 }
+/* 静默开关：原来是「标题 + 两个按钮」的紧凑两栏；加了定时静默面板后改成普通块布局（.row 不能再钉在第 2 栏） */
 #section-silent {
   grid-column:1/-1;
   order:2;
-  display:grid;
-  grid-template-columns:1fr auto;
-  gap:8px 20px;
+  display:block;
   padding-top:20px;
   padding-bottom:20px
 }
 #section-silent h2 {
-  margin:0;
-  align-self:center
-}
-#section-silent .meta {
-  grid-column:1/-1;
   margin:0
-}
-#section-silent .row {
-  grid-column:2;
-  grid-row:1
 }
 .tag {
   display:inline-block;
@@ -920,6 +910,121 @@ tr:last-child td {
   background:var(--warn-bg);
   border-color:var(--warn-border);
   color:var(--warn-fg)
+}
+.sched-limits {
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:10px
+}
+.sched-limits label {
+  margin:0 0 4px
+}
+.sched-limits input {
+  width:100%
+}
+.sched-table {
+  width:100%;
+  border-collapse:collapse
+}
+.sched-table td,.sched-table th {
+  padding:9px 6px;
+  border-top:1px solid var(--card-border);
+  vertical-align:top;
+  text-align:left;
+  font-size:13px
+}
+.sched-table th {
+  white-space:nowrap;
+  border-top:none;
+  color:var(--muted);
+  font-size:11px;
+  font-weight:500
+}
+.sched-chip {
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  margin:2px 4px 2px 0;
+  padding:3px 9px;
+  border:1px solid var(--border-input);
+  border-radius:8px;
+  font-size:12px;
+  cursor:pointer;
+  user-select:none
+}
+.sched-chip input {
+  margin:0
+}
+.sched-chip.on {
+  border-color:var(--accent);
+  color:var(--accent)
+}
+.sched-fields .row {
+  margin-top:6px
+}
+.sched-editor {
+  border:1px solid var(--accent);
+  border-radius:var(--radius);
+  padding:18px;
+  margin-top:14px
+}
+.sched-history div {
+  font-size:12px;
+  color:var(--muted);
+  line-height:2
+}
+@media (max-width:900px) {
+  .sched-limits {
+    grid-template-columns:repeat(2,minmax(0,1fr))
+  }
+}
+.silence-block {
+  border-top:1px solid var(--card-border);
+  margin-top:16px;
+  padding-top:14px
+}
+.silence-row {
+  display:grid;
+  grid-template-columns:78px minmax(90px,1fr) 270px minmax(0,2.4fr) 44px;
+  gap:8px;
+  align-items:center;
+  padding:8px 0;
+  border-top:1px solid var(--card-border)
+}
+.silence-row.h {
+  border-top:none;
+  color:var(--muted);
+  font-size:11px;
+  padding-bottom:0
+}
+.silence-row.off {
+  opacity:.55
+}
+.silence-row input[type=time] {
+  width:100%;
+  min-width:118px
+}
+.silence-options {
+  border:1px solid var(--card-border);
+  border-radius:var(--radius);
+  padding:10px 12px;
+  margin-top:12px
+}
+.silence-opt {
+  display:flex;
+  flex-wrap:wrap;
+  margin:6px 0 0;
+  border:none;
+  padding:2px 0
+}
+.silence-opt .meta {
+  flex-basis:100%;
+  margin:0 0 0 22px
+}
+@media (max-width:900px) {
+  .silence-row {
+    grid-template-columns:60px minmax(0,1fr) minmax(0,1fr)
+  }
 }
 .slang-guess {
   font-style:italic;
@@ -1829,6 +1934,7 @@ button:active:not(:disabled) {
       <button data-view="social-v2" class="nav-item"><span class="nav-icon" aria-hidden="true">◈</span>二代仿真<span class="nav-note">V2</span></button>
       <button data-view="social-v1" class="nav-item"><span class="nav-icon" aria-hidden="true">◇</span>一代仿真<span class="nav-note">V1</span></button>
       <button data-view="slang" class="nav-item"><span class="nav-icon" aria-hidden="true">▤</span>黑话词库</button>
+      <button data-view="scheduler" class="nav-item"><span class="nav-icon" aria-hidden="true">◷</span>定时任务</button>
       <div class="nav-label">管理</div>
       <button data-view="usage" class="nav-item"><span class="nav-icon" aria-hidden="true">◧</span>令牌与花费</button>
       <button data-view="access" class="nav-item"><span class="nav-icon" aria-hidden="true">⊙</span>访问与安全</button>
@@ -1930,6 +2036,12 @@ button:active:not(:disabled) {
             <button id="roleFormReset">清空表单</button>
             <span class="meta" id="roleCreateMsg"></span>
           </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px">
+            <span class="meta" style="margin:0">保存当前启用的人格后，二代仿真里：</span>
+            <label class="sched-chip" style="margin:0;white-space:nowrap"><input type="radio" name="roleSaveApply" value="nextWake" checked> 下次唤醒时重新读卡</label>
+            <label class="sched-chip" style="margin:0;white-space:nowrap"><input type="radio" name="roleSaveApply" value="immediate"> 立即生效（现在就唤醒各会话读新卡）</label>
+          </div>
+          <div class="meta">只对正在启用的人格起作用；编辑其它人格时这里不影响任何会话。和下面「切换当前启用的人格」的选项各管各的按钮，两处都点也只会让每个会话读一次（已经读到新卡的会话自动跳过）。</div>
           <div class="meta err" id="roleEditorWarnings"></div>
         </div>
       </details>
@@ -1946,6 +2058,13 @@ button:active:not(:disabled) {
           </div>
           <!-- 放在行外、占正常文档流：外层折叠面板 overflow:hidden，浮层式下拉会被裁掉；在流内展开时面板跟着变高 -->
           <ul id="roleSuggest" class="role-suggest" role="listbox" aria-label="已有人格" hidden></ul>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px">
+            <span class="meta" style="margin:0">二代仿真里生效方式：</span>
+            <label class="sched-chip" style="margin:0;white-space:nowrap"><input type="radio" name="roleApply" value="nextWake" checked> 下次唤醒时重新读卡</label>
+            <label class="sched-chip" style="margin:0;white-space:nowrap"><input type="radio" name="roleApply" value="immediate"> 立即切换（现在就唤醒各会话读新卡）</label>
+          </div>
+          <div class="meta">二代仿真的会话只在建立时读一次完整角色卡；切换、清除或修改当前人格后，桥接会把新卡直接写进各会话下一次的唤醒提示里，记忆和群规则都不动。选「立即」会马上给还没读到新卡的会话各唤醒一次（多花一点 token；定时静默中的会话等静默结束）。聊天模式 / 一代仿真每条消息都带角色卡，切换本来就立即生效。</div>
+          <div class="meta" id="roleApplyResult" hidden></div>
           <div class="meta">清空当前人格后，AI 只按「仿真提示词」行动，不扮演任何角色。</div>
         </div>
       </details>
@@ -2129,6 +2248,8 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="stickerNote"> <span><b>qq_sticker_note</b><span class="meta">给表情记录本地含义/标签/用法</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setStickerRemark"> <span><b>qq_set_sticker_remark</b><span class="meta">修改 QQ 官方表情备注（默认禁用，慎用）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendVoice"> <span><b>qq_send_voice / qq_list_voices</b><span class="meta">发送语音条（只能发语音库里的音频；偶然而为的强表达）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="schedule"> <span><b>qq_schedule_create / list / update / delete</b><span class="meta">定时任务：只在管理员私聊里能用，AI 替你登记提醒、到点由桥接执行；默认只能发给你，登记后桥接另发确认（详见「定时任务」页面）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="handoverMemory"> <span><b>切到 agent 时带上私聊长期记忆</b><span class="meta">不是工具：切到 agent L1～L3 时，把二代仿真里 AI 在管理员私聊记下的话题、想说的话、印象一并交接给 agent（只取管理员私聊的，不含任何群；已脱敏）。关掉后只交接最近的私聊往来</span></span></label>
       </div>
       <div class="meta" style="margin-top:6px">二代黑话学习：AI 可用 <code>qq_slang_submit</code> 提交陌生词，也可由桥接自动提取；管理员在「黑话词库」页面筛选确认后，词条会自动写入黑话提示词并注入 <code>qq_get_prompt</code> 与后续唤醒。</div>
 
@@ -2498,6 +2619,91 @@ button:active:not(:disabled) {
         </div>
       </details>
     </section>
+<section id="section-scheduler" data-page="scheduler" class="card span-all">
+      <h2>定时任务</h2>
+      <div class="row">
+        <label class="sched-chip" style="margin:0"><input type="checkbox" id="schedEnabled"> 启用定时任务</label>
+        <span id="schedStatePill" class="pill">—</span>
+        <span class="meta" style="margin:0">默认时区</span>
+        <select id="schedTimezone" style="flex:0 1 320px" aria-label="默认时区"></select>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="sched-chip" style="margin:0"><input type="checkbox" id="schedAllowAiPrivate"> 允许 AI 在管理员私聊里登记任务</label>
+        <label class="sched-chip" style="margin:0"><input type="checkbox" id="schedAllowAiGroup"> 允许 AI 登记发往群 / 其他好友的任务（登记后先暂停，需你确认）</label>
+        <button id="schedSettingsSave" class="small">保存</button>
+        <span class="meta" id="schedSettingsMsg" style="margin:0"></span>
+      </div>
+      <div class="meta">总开关和安全限制只能在这里或管理员命令里改，AI 改不了。时间一律按任务的时区计算，和这台电脑的时区无关。</div>
+
+      <h3 style="margin-top:22px">安全限制</h3>
+      <div class="sched-limits" id="schedLimits"></div>
+      <div class="row" style="margin-top:10px">
+        <label class="sched-chip" style="margin:0"><input type="checkbox" id="schedQuietEnabled"> 定时任务免打扰（只拦定时任务发往群的消息，不影响 AI 平时被 @ 时回复）</label>
+        <input type="text" id="schedQuietStart" style="flex:0 1 80px" placeholder="00:00"> 到 <input type="text" id="schedQuietEnd" style="flex:0 1 80px" placeholder="07:00">
+        <button id="schedLimitsSave" class="small">保存限制</button>
+        <button id="schedLimitsReset" class="small">恢复默认</button>
+        <span class="meta" id="schedLimitsMsg" style="margin:0"></span>
+      </div>
+
+      <div class="row" style="margin-top:22px;justify-content:space-between">
+        <h3 style="margin:0">任务列表 <span class="meta" id="schedCount"></span></h3>
+        <button id="schedNew" class="small">＋ 新建任务</button>
+      </div>
+      <div id="schedList" style="overflow:auto"></div>
+
+      <div class="sched-editor" id="schedEditor" hidden>
+        <h3 id="schedEditorTitle" style="margin-top:0">新建任务</h3>
+        <div class="grid" style="gap:12px">
+          <div><label for="schedName">名称</label><input type="text" id="schedName" placeholder="早安"></div>
+          <div><label for="schedTaskTz">时区</label><select id="schedTaskTz"></select></div>
+        </div>
+        <label for="schedType">重复方式</label>
+        <select id="schedType">
+          <option value="once">一次性</option>
+          <option value="daily">每天</option>
+          <option value="weekly">每周</option>
+          <option value="workdays">工作日（周一至周五，跳过法定节假日）</option>
+          <option value="monthly">每月几号</option>
+          <option value="monthlyWeekday">每月第几个周几</option>
+          <option value="yearly">每年</option>
+          <option value="dates">特殊日期</option>
+          <option value="everyNDays">每隔 N 天</option>
+          <option value="interval">每隔 N 分钟</option>
+          <option value="dailyRandom">每天随机几次</option>
+          <option value="monthlyRandom">每月随机几次</option>
+          <option value="cron">高级：cron 表达式</option>
+        </select>
+        <div class="sched-fields" id="schedFields"></div>
+        <div class="grid" style="gap:12px">
+          <div><label>有效期（可选）</label><div class="row"><input type="text" id="schedStartDate" placeholder="开始 YYYY-MM-DD" style="flex:1 1 120px"><input type="text" id="schedEndDate" placeholder="结束 YYYY-MM-DD" style="flex:1 1 120px"></div></div>
+          <div><label for="schedMaxRuns">共执行几次后停止（可选）</label><input type="number" id="schedMaxRuns" min="1" placeholder="不限"></div>
+        </div>
+        <div class="grid" style="gap:12px">
+          <div><label for="schedExclude">排除日期（可选，逗号分隔）</label><input type="text" id="schedExclude" placeholder="2026-12-25, 2027-01-01"></div>
+          <div><label>其它</label><div class="row"><label class="sched-chip" style="margin:0"><input type="checkbox" id="schedSkipHolidays"> 跳过法定节假日</label>
+            <select id="schedSilence" style="flex:1 1 160px" title="只对「叫 AI 来说」有效；固定文字在定时静默里照发"><option value="skip">定时静默时段内：跳过这次</option><option value="run">定时静默时段内：照常执行</option></select>
+            <select id="schedMissed" style="flex:1 1 160px"><option value="grace">错过了：补发时间内补发，否则跳过</option><option value="skip">错过了：直接跳过</option></select></div></div>
+        </div>
+        <label>发给谁（可多选）</label>
+        <div id="schedTargets"></div>
+        <label>内容</label>
+        <div class="row">
+          <label class="sched-chip" style="margin:0"><input type="radio" name="schedKind" value="text" checked> 固定文字（桥接直接发）</label>
+          <label class="sched-chip" style="margin:0"><input type="radio" name="schedKind" value="ai"> 叫 AI 来说（到点唤醒 AI）</label>
+        </div>
+        <textarea id="schedContent" rows="3" style="width:100%;margin-top:8px" placeholder="早上好"></textarea>
+        <div class="meta" id="schedPreview">接下来：—</div>
+        <div class="row" style="margin-top:10px">
+          <button id="schedSave">保存任务</button>
+          <button id="schedCancel" class="small">取消</button>
+          <span class="meta" id="schedEditorMsg" style="margin:0"></span>
+        </div>
+      </div>
+
+      <h3 style="margin-top:22px">执行记录 <span class="meta">最近 100 条</span></h3>
+      <div class="sched-history" id="schedHistory"><div>暂无</div></div>
+      <div class="meta">管理员私聊里也可以用 <code>/remind</code> 管理（发 <code>/remind</code> 看用法）；在二代仿真里也可以直接跟 AI 说「每天六点给我发个早安」，AI 登记后桥接会另发一条确认给你。</div>
+    </section>
 <section id="section-reference" data-page="reference" class="card span-all">
       <h2>DSH 侧 MCP 工具</h2>
       <div class="meta">由 qq-bridge 的 MCP server 提供给 DSH agent；修改后需重启 DSH 才会刷新工具 schema。</div>
@@ -2533,13 +2739,45 @@ button:active:not(:disabled) {
         <span class="meta">保存后立即生效并写入 config.json</span>
       </div>
     </section>
-<section id="section-silent" data-page="overview" class="card">
-      <h2>静默开关</h2>
-      <div class="row">
+<section id="section-silent" data-page="overview" class="card span-all">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">静默开关</h2>
+        <span id="silenceStatePill" class="pill">—</span>
+      </div>
+      <div class="row" style="margin-top:10px">
         <button id="silentOn">开启静默</button>
         <button id="silentOff">恢复正常</button>
+        <span class="meta" style="margin:0">手动开关优先：手动开启后一直静默；定时静默期间点「恢复正常」= 这一段临时恢复，下一段照常。</span>
       </div>
       <div class="meta">静默时群友消息不投递 agent，仅管理员可对话。</div>
+
+      <div class="silence-block">
+        <div class="row" style="justify-content:space-between">
+          <div class="row">
+            <label class="sched-chip" style="margin:0"><input type="checkbox" id="silenceEnabled"> <b>定时静默</b></label>
+            <span class="meta" style="margin:0">按时间段自动静默，用来避开高峰价、省 token</span>
+          </div>
+          <div class="row"><span class="meta" style="margin:0">时区</span><select id="silenceTz" style="flex:0 1 320px" aria-label="定时静默的时区"></select></div>
+        </div>
+        <div id="silenceRanges" style="margin-top:8px"></div>
+        <div class="row" style="margin-top:8px">
+          <button id="silenceAdd" class="small">＋ 添加时间段</button>
+          <button id="silencePeak" class="small">一键填入 DeepSeek 高峰时段</button>
+          <span class="meta" style="margin:0" id="silencePeakNote">高峰：北京时间工作日 09:00–12:00、14:00–18:00，单价 ×2（取自「令牌与花费」的价目表）</span>
+        </div>
+        <div class="silence-options">
+          <div style="font-weight:500">静默期间</div>
+          <label class="sched-chip silence-opt"><input type="checkbox" data-silence-opt="stopWakes"> 停止 AI 的一切唤醒（被 @、主动冒泡、睡醒、回复检查）——真正不花 token<span class="meta">原来的手动静默只拦发送，AI 仍会被定时唤醒去思考；定时静默会连唤醒一起停</span></label>
+          <label class="sched-chip silence-opt"><input type="checkbox" data-silence-opt="recordMessages"> 群消息照样记下（不唤醒 AI），恢复后 AI 能补看这段时间说了什么</label>
+          <label class="sched-chip silence-opt"><input type="checkbox" data-silence-opt="catchUpOnEnd"> 静默期间有人 @ / 叫名字 / 提问 / 拍一拍 AI，结束时补一次唤醒</label>
+          <label class="sched-chip silence-opt"><input type="checkbox" data-silence-opt="pauseAiTasks"> 定时任务里「叫 AI 来说」的也暂停（任务里可以单独设「照常执行」）；固定文字照发</label>
+          <label class="sched-chip silence-opt"><input type="checkbox" data-silence-opt="includeOwnerPrivate"> 管理员私聊也一起静默（默认不勾：你随时能和 AI 私聊）</label>
+        </div>
+        <div class="row" style="margin-top:12px;justify-content:space-between">
+          <span class="meta" style="margin:0" id="silenceUpcoming">—</span>
+          <div class="row"><span class="meta" style="margin:0" id="silenceMsg"></span><button id="silenceSave">保存定时静默</button></div>
+        </div>
+      </div>
     </section>
 <section id="section-dsh" data-page="overview" class="card span-all">
       <h2 data-note="下一条消息生效">DSH 模型与思考强度</h2>
@@ -2890,6 +3128,13 @@ let roleEditorState = { mode: 'new', name: '' };
 let roleCache = [];
 let roleInjectMax = 6000;
 
+/** 保存人格后，描述二代会话什么时候读到新卡。 */
+function roleSaveRefreshText(x) {
+  if (!x || x.notActive) return '';
+  if (x.note) return '；' + x.note;
+  if (x.apply === 'immediate') return '；已唤醒 ' + x.woke + ' 个会话重新读卡' + (x.pending ? '，' + x.pending + ' 个在定时静默里，静默结束后再读' : '') + (x.woke || x.pending ? '' : '（都已是新卡）');
+  return x.pending ? '；' + x.pending + ' 个会话会在下一次唤醒时读到新卡' : '';
+}
 function setRoleMsg(text, ok) {
   const el = document.getElementById('roleCreateMsg');
   el.textContent = text;
@@ -3287,11 +3532,26 @@ function filterRoleSuggestions(names, query) {
     else if (e.key === 'Escape') { close(); e.preventDefault(); }
   });
 })();
+function roleApplyMode() {
+  const el = document.querySelector('input[name="roleApply"]:checked');
+  return el ? el.value : 'nextWake';
+}
+function showRoleApplyResult(r) {
+  const box = document.getElementById('roleApplyResult');
+  const x = r && r.refresh;
+  if (!x) { box.hidden = true; return; }
+  let text;
+  if (x.note) text = '✅ ' + x.note;
+  else if (x.apply === 'immediate') text = '✅ 已唤醒 ' + x.woke + ' 个会话重新读卡' + (x.pending ? '；' + x.pending + ' 个在定时静默里，静默结束后的下一次唤醒再读' : '') + (x.woke || x.pending ? '' : '（所有会话都已是新卡）');
+  else text = '✅ 已切换；' + (x.pending ? x.pending + ' 个会话会在下一次唤醒时读到新卡' : '所有会话都已是新卡');
+  box.textContent = text;
+  box.hidden = false;
+}
 document.getElementById('roleSet').addEventListener('click', async () => {
-  const r = await api('/api/role', 'POST', { role: document.getElementById('roleInput').value.trim() });
-  if (r.ok) refreshRoles(); else alert(r.error || '设置失败');
+  const r = await api('/api/role', 'POST', { role: document.getElementById('roleInput').value.trim(), apply: roleApplyMode() });
+  if (r.ok) { showRoleApplyResult(r); refreshRoles(); } else alert(r.error || '设置失败');
 });
-document.getElementById('roleClear').addEventListener('click', async () => { await api('/api/role', 'POST', { role: null }); refreshRoles(); refresh(); });
+document.getElementById('roleClear').addEventListener('click', async () => { const r = await api('/api/role', 'POST', { role: null, apply: roleApplyMode() }); showRoleApplyResult(r); refreshRoles(); refresh(); });
 document.getElementById('roleCreate').addEventListener('click', async () => {
   const name = document.getElementById('newRoleName').value.trim();
   const content = document.getElementById('newRoleContent').value.trim();
@@ -3304,8 +3564,9 @@ document.getElementById('roleCreate').addEventListener('click', async () => {
     if (!renamed.ok) { setRoleMsg('❌ ' + (renamed.error || '重命名失败'), false); return; }
   }
   const endpoint = editing || exists ? '/api/roles/update' : '/api/roles/create';
-  const r = await api(endpoint, 'POST', { name, content });
-  setRoleMsg(r.ok ? `✅ 已保存「${name}」` : ('❌ ' + (r.error || '失败')), r.ok);
+  const saveApply = (document.querySelector('input[name="roleSaveApply"]:checked') || {}).value || 'nextWake';
+  const r = await api(endpoint, 'POST', { name, content, apply: saveApply });
+  setRoleMsg(r.ok ? `✅ 已保存「${name}」` + roleSaveRefreshText(r.refresh) : ('❌ ' + (r.error || '失败')), r.ok);
   if (r.ok) {
     roleEditorState = { mode: 'edit', name };
     document.getElementById('roleEditorWarnings').textContent = (r.warnings || []).length ? '⚠️ ' + r.warnings.join('；') : '';
@@ -3406,8 +3667,12 @@ document.getElementById('dshEffortSave').addEventListener('click', async () => {
   msg.className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) { await refreshDshModel(); msg.textContent = `✅ 已设为 ${r.provider}/${r.model}（${r.reasoningEffort || '模型默认强度'}），下一条消息生效`; msg.className = 'meta ok'; }
 });
-document.getElementById('silentOn').addEventListener('click', async () => { await api('/api/role-mode', 'POST', { mode: 'silent' }); refresh(); });
-document.getElementById('silentOff').addEventListener('click', async () => { await api('/api/role-mode', 'POST', { mode: 'active' }); refresh(); });
+document.getElementById('silentOn').addEventListener('click', async () => { await api('/api/role-mode', 'POST', { mode: 'silent' }); refresh(); refreshSilence(); });
+document.getElementById('silentOff').addEventListener('click', async () => {
+  const r = await api('/api/role-mode', 'POST', { mode: 'active' });
+  if (r.resumedScheduled) showConsoleToast(`定时静默「${r.resumedScheduled.name}」这一段临时恢复，到 ${r.resumedScheduled.untilText}；下一段照常静默`);
+  refresh(); refreshSilence();
+});
 document.getElementById('wlSave').addEventListener('click', async () => {
   const parse = (s) => s.split(/[,，\s]+/).map(x => x.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
   const r = await api('/api/whitelist', 'POST', {
@@ -4731,6 +4996,7 @@ const consolePages = {
   'social-v2': ['二代仿真', '自主参与，恰到好处。', '管理 AI 的工具、唤醒与发言节奏。展开需要调整的分组，修改后保存参数。'],
   'social-v1': ['一代仿真', '为自然对话，设定合适的节奏。', '调整参与概率、活跃周期和分条发送；所有配置项完整保留。'],
   slang: ['黑话词库', '读懂群聊里的，言外之意。', '从候选到确认，让 AI 逐渐熟悉大家的表达习惯。'],
+  scheduler: ['定时任务', '到点的事，交给桥接记着。', '按时区和规则定时发消息，或叫 AI 到点来说；可以发给管理员私聊、白名单好友和群。'],
   usage: ['令牌与花费', '每一次思考，都算得清楚。', '实时查看 AI 的 token 消耗与花费，可下钻到每个群、每个好友、每一轮对话。'],
   access: ['访问与安全', '明确边界，安心连接。', '管理允许对话的对象、管理员权限与控制台访问凭证。'],
   operations: ['调试与运维', '让桥接，始终井然有序。', '测试消息、引导 AI，或维护桥接进程与会话工作区。'],
@@ -4763,6 +5029,8 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   closeConsoleSearch();
   // 语音库按需加载：进入二代仿真页时才探测（避免每次开控制台都压网关）。
   if (page === 'social-v2' && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
+  // 直接打开 #scheduler 时这里先于定时任务那段脚本执行：推迟到脚本跑完再刷新（否则会碰到还没初始化的变量）
+  if (page === 'scheduler' && typeof refreshScheduler === 'function') setTimeout(() => refreshScheduler(), 0);
   if (focus) {
     document.getElementById('mainContent').focus({ preventScroll: true });
     document.getElementById(target || 'mainContent')?.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -5348,7 +5616,383 @@ document.getElementById('usageClear').addEventListener('click', async () => {
 
 setConsolePage(location.hash.slice(1), { updateHash:false });
 
-refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
+
+// ── 定时任务 ────────────────────────────────────────────────────────────────
+// 规则的计算、限额、到点执行都在桥接（src/scheduler/）；这里只负责编辑和展示。
+const SCHED_LIMIT_FIELDS = [
+  ['maxTasks', '同时任务上限', '个'], ['perTaskPerDay', '单任务每天最多', '次'], ['totalPerDay', '全部每天最多', '条'],
+  ['perGroupPerDay', '每个群每天最多', '条'], ['maxTargets', '单任务最多对象', '个'], ['minIntervalMin', '两次最小间隔', '分钟'],
+  ['missedGraceMin', '错过多久内补发', '分钟'], ['jitterMin', '固定时间随机偏移', '± 分钟'], ['maxTextChars', '文字最长', '字'], ['maxInstructionChars', 'AI 说明最长', '字'],
+];
+const SCHED_WEEK = ['', '一', '二', '三', '四', '五', '六', '日'];
+const SCHED_STATUS = { sent: ['已发送', 'pill g'], partial: ['部分发送', 'pill b'], skipped: ['已跳过', 'pill b'], failed: ['失败', 'pill r'], missed: ['错过', 'pill'], finished: ['已结束', 'pill'], invalid: ['规则无效', 'pill r'] };
+// 时区下拉：浏览器认得的全部时区，每项后面带当前的 UTC 偏移（有夏令时的地区会随季节变）；常用的放最前。
+const SCHED_TZ_COMMON = [
+  ['Asia/Shanghai', '北京时间'], ['Asia/Hong_Kong', '香港'], ['Asia/Taipei', '台北'], ['Asia/Singapore', '新加坡'], ['Asia/Tokyo', '东京'], ['Asia/Seoul', '首尔'],
+  ['Asia/Kolkata', '印度'], ['Europe/London', '伦敦'], ['Europe/Paris', '巴黎'], ['Europe/Berlin', '柏林'], ['Europe/Moscow', '莫斯科'],
+  ['America/New_York', '美东'], ['America/Chicago', '美中'], ['America/Denver', '美山地'], ['America/Los_Angeles', '美西'], ['Australia/Sydney', '悉尼'], ['UTC', '协调世界时'],
+];
+function schedTzOffset(tz) {
+  try {
+    const name = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value || '';
+    return name === 'GMT' || name === 'UTC' ? 'UTC+0' : name.replace(/^GMT/, 'UTC');
+  } catch { return ''; }
+}
+function schedTzMinutes(label) {
+  const m = /^UTC([+-])(\d+)(?::(\d+))?$/.exec(label);
+  return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3] || 0)) : 0;
+}
+function schedTzOptionsHtml(withFollow) {
+  const all = (typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : SCHED_TZ_COMMON.map(([z]) => z));
+  const common = new Set(SCHED_TZ_COMMON.map(([z]) => z));
+  const opt = (z, extra = '') => { const off = schedTzOffset(z); return `<option value="${esc(z)}">${esc(z)}（${esc(off)}${extra ? '，' + esc(extra) : ''}）</option>`; };
+  const rest = all.filter((z) => !common.has(z)).map((z) => [z, schedTzOffset(z)]).sort((a, b) => schedTzMinutes(a[1]) - schedTzMinutes(b[1]) || a[0].localeCompare(b[0]));
+  return (withFollow ? '<option value="">跟随默认时区</option>' : '')
+    + `<optgroup label="常用">${SCHED_TZ_COMMON.map(([z, n]) => opt(z, n)).join('')}</optgroup>`
+    + `<optgroup label="全部时区（按 UTC 偏移排序）">${rest.map(([z]) => opt(z)).join('')}</optgroup>`;
+}
+function schedSetTz(select, tz) {
+  if (tz && ![...select.options].some((o) => o.value === tz)) select.insertAdjacentHTML('afterbegin', `<option value="${esc(tz)}">${esc(tz)}（${esc(schedTzOffset(tz))}）</option>`);
+  select.value = tz || '';
+}
+// 这里还在 schedEl 定义之前，直接用 getElementById
+document.getElementById('schedTimezone').innerHTML = schedTzOptionsHtml(false);
+document.getElementById('schedTaskTz').innerHTML = schedTzOptionsHtml(true);
+
+let schedState = null;
+let schedEditingId = null;
+let schedPreviewTimer = null;
+const schedEl = (id) => document.getElementById(id);
+const schedSplit = (v) => String(v ?? '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean);
+function schedMsg(id, text, ok) { const el = schedEl(id); el.textContent = text; el.className = ok == null ? 'meta' : (ok ? 'meta ok' : 'meta err'); }
+
+async function refreshScheduler() {
+  try {
+    const r = await api('/api/scheduler');
+    if (!r.ok) { schedEl('schedList').innerHTML = `<div class="meta">读取失败：${esc(r.error || '')}</div>`; return; }
+    schedState = r;
+    renderScheduler();
+  } catch (error) {
+    schedEl('schedList').innerHTML = `<div class="meta">读取失败：${esc(error?.message ?? error)}</div>`;
+  }
+}
+
+function renderScheduler() {
+  const r = schedState;
+  if (!r) return;
+  const st = r.settings;
+  schedEl('schedEnabled').checked = !!st.enabled;
+  schedEl('schedAllowAiPrivate').checked = !!st.allowAiPrivate;
+  schedEl('schedAllowAiGroup').checked = !!st.allowAiGroup;
+  if (document.activeElement !== schedEl('schedTimezone')) schedSetTz(schedEl('schedTimezone'), st.timezone);
+  const pill = schedEl('schedStatePill');
+  pill.textContent = st.enabled ? (r.writable === false ? '只读（数据文件读取失败）' : '运行中') : '已关闭';
+  pill.className = st.enabled && r.writable !== false ? 'pill g' : 'pill r';
+  schedEl('schedLimits').innerHTML = SCHED_LIMIT_FIELDS.map(([k, label, unit]) => `<div><label for="schedLim_${k}">${esc(label)}（${esc(unit)}）</label><input type="number" id="schedLim_${k}" min="0" value="${esc(st.limits[k])}" title="默认 ${esc(r.defaults?.limits?.[k] ?? '')}"></div>`).join('');
+  schedEl('schedQuietEnabled').checked = !!st.limits.quietEnabled;
+  schedEl('schedQuietStart').value = st.limits.quietStart;
+  schedEl('schedQuietEnd').value = st.limits.quietEnd;
+  schedEl('schedCount').textContent = `${r.tasks.length} / ${st.limits.maxTasks}`;
+  const targetLabel = (k) => (r.targets.find((t) => t.key === k)?.label) || k;
+  schedEl('schedList').innerHTML = r.tasks.length ? `<table class="sched-table"><tr><th>启用</th><th>任务</th><th>时间</th><th>发给</th><th>上次</th><th>操作</th></tr>${r.tasks.map((t) => {
+    const badges = [t.kind === 'ai' ? '<span class="pill b">AI 来说</span>' : '<span class="pill">固定文字</span>',
+      `<span class="pill">来源：${esc({ console: '控制台', 'owner-command': '管理员命令', 'owner-chat-ai': '私聊 AI' }[t.createdBy] || t.createdBy)}</span>`,
+      t.pendingConfirm ? '<span class="pill r">待你确认</span>' : ''].join(' ');
+    const last = t.lastResult ? `<span class="${(SCHED_STATUS[t.lastResult] || ['', 'pill'])[1]}">${esc((SCHED_STATUS[t.lastResult] || [t.lastResult])[0])}</span>${t.lastReason ? `<div class="meta" style="margin:2px 0 0">${esc(t.lastReason)}</div>` : ''}` : '<span class="meta">—</span>';
+    return `<tr>
+      <td><input type="checkbox" data-sched-toggle="${t.id}" ${t.enabled ? 'checked' : ''} aria-label="启用 #${t.id}"></td>
+      <td><b>#${t.id} ${esc(t.name)}</b><div style="margin-top:4px">${badges}</div><div class="meta" style="margin:4px 0 0">${esc(t.kind === 'ai' ? t.instruction : t.text)}</div></td>
+      <td>${esc(t.scheduleText)}<div class="meta" style="margin:2px 0 0">${t.nextRunText ? '下次：' + esc(t.nextRunText) : '没有下一次'}${t.maxRuns ? `；已执行 ${t.runs} / ${t.maxRuns}` : ''}</div></td>
+      <td>${t.targets.map((k) => `<span class="sched-chip" style="cursor:default">${esc(targetLabel(k))}</span>`).join('')}</td>
+      <td>${last}</td>
+      <td class="row"><button class="small" data-sched-run="${t.id}" title="立即执行一次（计入今天的限额）">试发</button><button class="small" data-sched-edit="${t.id}">编辑</button><button class="small danger" data-sched-del="${t.id}">删</button></td>
+    </tr>`;
+  }).join('')}</table>` : '<div class="meta">还没有定时任务。点「＋ 新建任务」，或者在管理员私聊里发 /remind 看用法。</div>';
+  schedEl('schedHistory').innerHTML = r.history.length ? r.history.map((h) => {
+    const [label, cls] = SCHED_STATUS[h.status] || [h.status, 'pill'];
+    return `<div><span class="${cls}">${esc(label)}</span> ${esc(new Date(h.at).toLocaleString('zh-CN', { hour12: false, timeZone: st.timezone }))} #${esc(h.taskId)} ${esc(h.name || '')}${h.target ? ' → ' + esc(targetLabel(h.target)) : ''}${h.manual ? '（试发）' : ''}${h.reason ? '：' + esc(h.reason) : ''}</div>`;
+  }).join('') + `<div>（时间按 ${esc(st.timezone === 'Asia/Shanghai' ? '北京时间' : st.timezone)} 显示）</div>` : '<div>暂无</div>';
+  schedEl('schedList').querySelectorAll('[data-sched-toggle]').forEach((cb) => cb.addEventListener('change', async () => {
+    const res = await api(`/api/scheduler/tasks/${cb.dataset.schedToggle}/${cb.checked ? 'enable' : 'disable'}`, 'POST', {});
+    if (!res.ok) alert(res.error || '操作失败');
+    refreshScheduler();
+  }));
+  schedEl('schedList').querySelectorAll('[data-sched-run]').forEach((b) => b.addEventListener('click', async () => {
+    const res = await api(`/api/scheduler/tasks/${b.dataset.schedRun}/run`, 'POST', {});
+    if (!res.ok) alert(res.error || '试发失败');
+    else showConsoleToast(`#${b.dataset.schedRun} 试发：` + res.outcomes.map((o) => `${targetLabel(o.target)} ${(SCHED_STATUS[o.status] || [o.status])[0]}${o.reason ? '（' + o.reason + '）' : ''}`).join('；'));
+    refreshScheduler();
+  }));
+  schedEl('schedList').querySelectorAll('[data-sched-edit]').forEach((b) => b.addEventListener('click', () => openSchedEditor(r.tasks.find((t) => String(t.id) === b.dataset.schedEdit))));
+  schedEl('schedList').querySelectorAll('[data-sched-del]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm(`确定删除任务 #${b.dataset.schedDel}？`)) return;
+    const res = await api(`/api/scheduler/tasks/${b.dataset.schedDel}`, 'DELETE', {});
+    if (!res.ok) alert(res.error || '删除失败');
+    refreshScheduler();
+  }));
+}
+
+function schedFieldsHtml(type, s = {}) {
+  const v = (x, d = '') => esc(x ?? d);
+  const times = (s.times || ['09:00']).join(', ');
+  const timesRow = `<div class="row"><span class="meta" style="margin:0">时间</span><input type="text" id="sf_times" value="${v(times)}" placeholder="06:00, 22:00" style="flex:1 1 200px"></div>`;
+  const windowRow = (w) => `<div class="row"><span class="meta" style="margin:0">时间段</span><input type="time" id="sf_w0" value="${v((w || [])[0], '09:00')}"> 到 <input type="time" id="sf_w1" value="${v((w || [])[1], '22:00')}"></div>`;
+  switch (type) {
+    case 'once': return `<div class="row"><span class="meta" style="margin:0">日期和时间</span><input type="date" id="sf_date" value="${v(s.date)}"><input type="time" id="sf_time" value="${v(s.time, '09:00')}"></div>`;
+    case 'daily': case 'workdays': return timesRow;
+    case 'weekly': return `<div class="row">${[1, 2, 3, 4, 5, 6, 7].map((d) => `<label class="sched-chip" style="margin:0"><input type="checkbox" data-sf-wd="${d}" ${(s.weekdays || [1]).includes(d) ? 'checked' : ''}> 周${SCHED_WEEK[d]}</label>`).join('')}</div>${timesRow}`;
+    case 'monthly': return `<div class="row"><span class="meta" style="margin:0">几号</span><input type="text" id="sf_days" value="${v((s.days || [1]).join(', '))}" placeholder="1, 15, -1（-1 = 最后一天）" style="flex:1 1 200px"></div>${timesRow}`;
+    case 'monthlyWeekday': return `<div class="row"><span class="meta" style="margin:0">每月</span><select id="sf_nth">${[[1, '第 1 个'], [2, '第 2 个'], [3, '第 3 个'], [4, '第 4 个'], [5, '第 5 个'], [-1, '最后一个']].map(([n, l]) => `<option value="${n}" ${Number(s.nth ?? 1) === n ? 'selected' : ''}>${l}</option>`).join('')}</select><select id="sf_weekday">${[1, 2, 3, 4, 5, 6, 7].map((d) => `<option value="${d}" ${Number(s.weekday ?? 6) === d ? 'selected' : ''}>周${SCHED_WEEK[d]}</option>`).join('')}</select></div>${timesRow}`;
+    case 'yearly': return `<div class="row"><span class="meta" style="margin:0">日期</span><input type="text" id="sf_dates" value="${v((s.dates || ['01-01']).join(', '))}" placeholder="10-21, 12-25（MM-DD）" style="flex:1 1 200px"></div>${timesRow}`;
+    case 'dates': return `<div class="meta">每行一条：YYYY-MM-DD HH:mm</div><textarea id="sf_items" rows="3" style="width:100%">${v((s.items || []).map((x) => `${x.date} ${x.time}`).join('\n'))}</textarea>`;
+    case 'everyNDays': return `<div class="row"><span class="meta" style="margin:0">从</span><input type="date" id="sf_start" value="${v(s.startDate)}"><span class="meta" style="margin:0">起，每</span><input type="number" id="sf_every" min="2" value="${v(s.every, 3)}" style="flex:0 1 80px"><span class="meta" style="margin:0">天</span></div>${timesRow}`;
+    case 'interval': return `<div class="row"><span class="meta" style="margin:0">每</span><input type="number" id="sf_everyMin" min="10" value="${v(s.everyMinutes, 240)}" style="flex:0 1 90px"><span class="meta" style="margin:0">分钟</span></div>${windowRow(s.window || ['08:00', '23:00'])}`;
+    case 'dailyRandom': return `<div class="row"><span class="meta" style="margin:0">每天</span><input type="number" id="sf_count" min="1" value="${v(s.count, 3)}" style="flex:0 1 80px"><span class="meta" style="margin:0">次，至少隔</span><input type="number" id="sf_gap" min="0" value="${v(s.minGapMin, 60)}" style="flex:0 1 80px"><span class="meta" style="margin:0">分钟</span></div>${windowRow(s.window)}`;
+    case 'cron': return `<div class="row"><span class="meta" style="margin:0">表达式</span><input type="text" id="sf_cron" value="${v(s.expr, '0 9 * * 1-5')}" placeholder="0 9 * * 1-5" style="flex:1 1 220px;font-family:var(--mono, monospace)"></div>
+      <div class="meta">5 段：分 时 日 月 周（周 0 和 7 都是周日，也可以写 MON-FRI）。例子：<code>0 9 * * 1-5</code> 工作日 9:00；<code>30 8 1 * *</code> 每月 1 号 8:30；<code>0 10,15 * * 6,0</code> 周末 10:00 和 15:00；<code>*/30 9-18 * * *</code> 9～18 点每半小时。日和周都限定时按「任一满足」。下面会实时显示接下来几次，写错会直接提示。cron 只能在控制台设置，AI 不能用。</div>`;
+    case 'monthlyRandom': return `<div class="row"><span class="meta" style="margin:0">每月</span><input type="number" id="sf_mcount" min="1" value="${v(s.count, 4)}" style="flex:0 1 80px"><span class="meta" style="margin:0">次，限</span><input type="number" id="sf_d0" min="1" max="31" value="${v((s.dayRange || [])[0], 1)}" style="flex:0 1 70px"><span class="meta" style="margin:0">～</span><input type="number" id="sf_d1" min="1" max="31" value="${v((s.dayRange || [])[1], 28)}" style="flex:0 1 70px"><span class="meta" style="margin:0">号</span></div>${windowRow(s.window)}`;
+    default: return '';
+  }
+}
+
+function readSchedFields(type) {
+  const val = (id) => schedEl(id)?.value ?? '';
+  const s = { type };
+  if (['daily', 'workdays', 'weekly', 'monthly', 'monthlyWeekday', 'yearly', 'everyNDays'].includes(type)) s.times = schedSplit(val('sf_times'));
+  if (type === 'once') { s.date = val('sf_date'); s.time = val('sf_time'); }
+  if (type === 'weekly') s.weekdays = [...document.querySelectorAll('[data-sf-wd]')].filter((c) => c.checked).map((c) => Number(c.dataset.sfWd));
+  if (type === 'monthly') s.days = schedSplit(val('sf_days')).map(Number);
+  if (type === 'monthlyWeekday') { s.nth = Number(val('sf_nth')); s.weekday = Number(val('sf_weekday')); }
+  if (type === 'yearly') s.dates = schedSplit(val('sf_dates'));
+  if (type === 'dates') s.items = val('sf_items').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const [date, time] = l.split(/\s+/); return { date, time }; });
+  if (type === 'everyNDays') { s.startDate = val('sf_start'); s.every = Number(val('sf_every')); }
+  if (type === 'interval') { s.everyMinutes = Number(val('sf_everyMin')); s.window = [val('sf_w0'), val('sf_w1')]; }
+  if (type === 'dailyRandom' || type === 'monthlyRandom') { s.count = Number(val(type === 'dailyRandom' ? 'sf_count' : 'sf_mcount')); s.window = [val('sf_w0'), val('sf_w1')]; }
+  if (type === 'dailyRandom') s.minGapMin = Number(val('sf_gap'));
+  if (type === 'monthlyRandom') s.dayRange = [Number(val('sf_d0')), Number(val('sf_d1'))];
+  if (type === 'cron') s.expr = val('sf_cron').trim();
+  return s;
+}
+
+function schedPayload() {
+  const type = schedEl('schedType').value;
+  const schedule = readSchedFields(type);
+  if (schedEl('schedStartDate').value.trim() && type !== 'everyNDays') schedule.startDate = schedEl('schedStartDate').value.trim();
+  if (schedEl('schedEndDate').value.trim()) schedule.endDate = schedEl('schedEndDate').value.trim();
+  schedule.excludeDates = schedSplit(schedEl('schedExclude').value);
+  schedule.excludeHolidays = schedEl('schedSkipHolidays').checked;
+  const kind = document.querySelector('input[name="schedKind"]:checked')?.value || 'text';
+  const content = schedEl('schedContent').value.trim();
+  return {
+    name: schedEl('schedName').value.trim(),
+    timezone: schedEl('schedTaskTz').value.trim() || null,
+    schedule,
+    maxRuns: schedEl('schedMaxRuns').value ? Number(schedEl('schedMaxRuns').value) : null,
+    missedPolicy: schedEl('schedMissed').value,
+    runDuringSilence: schedEl('schedSilence').value === 'run',
+    targets: [...document.querySelectorAll('[data-sched-target]')].filter((c) => c.checked).map((c) => c.dataset.schedTarget),
+    kind,
+    ...(kind === 'ai' ? { instruction: content } : { text: content }),
+  };
+}
+
+function renderSchedTargets(selected) {
+  const r = schedState;
+  schedEl('schedTargets').innerHTML = (r?.targets || []).map((t) => `<label class="sched-chip ${selected.includes(t.key) ? 'on' : ''}" style="margin:2px 4px 2px 0"><input type="checkbox" data-sched-target="${esc(t.key)}" ${selected.includes(t.key) ? 'checked' : ''}> ${esc(t.label)}</label>`).join('')
+    || '<span class="meta">没有可选的发送对象（白名单为空，且没配 ownerQQ）</span>';
+  schedEl('schedTargets').querySelectorAll('[data-sched-target]').forEach((c) => c.addEventListener('change', () => c.parentElement.classList.toggle('on', c.checked)));
+}
+
+function openSchedEditor(task = null) {
+  schedEditingId = task ? task.id : null;
+  schedEl('schedEditor').hidden = false;
+  schedEl('schedEditorTitle').textContent = task ? `编辑任务 #${task.id}` : '新建任务';
+  const s = task?.schedule || { type: 'daily', times: ['09:00'] };
+  schedEl('schedName').value = task?.name || '';
+  schedSetTz(schedEl('schedTaskTz'), task?.timezone || '');
+  schedEl('schedType').value = s.type;
+  schedEl('schedFields').innerHTML = schedFieldsHtml(s.type, s);
+  schedEl('schedStartDate').value = s.type === 'everyNDays' ? '' : (s.startDate || '');
+  schedEl('schedEndDate').value = s.endDate || '';
+  schedEl('schedExclude').value = (s.excludeDates || []).join(', ');
+  schedEl('schedSkipHolidays').checked = !!s.excludeHolidays;
+  schedEl('schedMaxRuns').value = task?.maxRuns ?? '';
+  schedEl('schedMissed').value = task?.missedPolicy || 'grace';
+  schedEl('schedSilence').value = task?.runDuringSilence ? 'run' : 'skip';
+  const owner = (schedState?.targets || []).find((t) => t.kind === 'owner')?.key;
+  renderSchedTargets(task?.targets || (owner ? [owner] : []));
+  const kind = task?.kind || 'text';
+  document.querySelectorAll('input[name="schedKind"]').forEach((r) => { r.checked = r.value === kind; });
+  schedEl('schedContent').value = task ? (task.kind === 'ai' ? task.instruction : task.text) : '';
+  schedEl('schedContent').placeholder = kind === 'ai' ? '随便跟我聊一句，或者发个可爱的表情包' : '早上好';
+  schedMsg('schedEditorMsg', '');
+  schedEl('schedEditor').scrollIntoView({ block: 'nearest' });
+  schedPreview();
+}
+
+function schedPreview() {
+  clearTimeout(schedPreviewTimer);
+  schedPreviewTimer = setTimeout(async () => {
+    const p = schedPayload();
+    const r = await api('/api/scheduler/preview', 'POST', { schedule: p.schedule, timezone: p.timezone, count: 5, kind: p.kind, targets: p.targets, runDuringSilence: p.runDuringSilence });
+    schedEl('schedPreview').textContent = r.ok
+      ? `${r.scheduleText}。接下来：${r.next.length ? r.next.map((x) => x.text + (x.silenced ? `（处在定时静默「${x.silenced}」里，会跳过）` : '')).join('、') : '没有了（时间已过或规则不会再触发）'}`
+      : '规则有问题：' + (r.error || '');
+    schedEl('schedPreview').className = r.ok ? 'meta' : 'meta err';
+  }, 250);
+}
+
+schedEl('schedType').addEventListener('change', () => { schedEl('schedFields').innerHTML = schedFieldsHtml(schedEl('schedType').value); schedPreview(); });
+schedEl('schedEditor').addEventListener('input', (e) => { if (e.target.id !== 'schedContent' && e.target.id !== 'schedName') schedPreview(); });
+schedEl('schedEditor').addEventListener('change', (e) => {
+  if (e.target.name === 'schedKind') schedEl('schedContent').placeholder = e.target.value === 'ai' ? '随便跟我聊一句，或者发个可爱的表情包' : '早上好';
+  if (e.target.id !== 'schedContent' && e.target.id !== 'schedName') schedPreview();
+});
+schedEl('schedNew').addEventListener('click', () => openSchedEditor(null));
+schedEl('schedCancel').addEventListener('click', () => { schedEl('schedEditor').hidden = true; schedEditingId = null; });
+schedEl('schedSave').addEventListener('click', async () => {
+  const payload = schedPayload();
+  const r = schedEditingId == null
+    ? await api('/api/scheduler/tasks', 'POST', payload)
+    : await api(`/api/scheduler/tasks/${schedEditingId}`, 'PATCH', payload);
+  if (!r.ok) { schedMsg('schedEditorMsg', '❌ ' + (r.error || '保存失败'), false); return; }
+  schedMsg('schedEditorMsg', `✅ 已保存 #${r.task.id}${r.task.nextRunText ? '，下次 ' + r.task.nextRunText : ''}`, true);
+  schedEl('schedEditor').hidden = true;
+  schedEditingId = null;
+  showConsoleToast(`定时任务 #${r.task.id} 已保存${r.task.nextRunText ? '，下次 ' + r.task.nextRunText : ''}`);
+  refreshScheduler();
+});
+schedEl('schedSettingsSave').addEventListener('click', async () => {
+  const r = await api('/api/scheduler/settings', 'POST', {
+    enabled: schedEl('schedEnabled').checked,
+    timezone: schedEl('schedTimezone').value || 'Asia/Shanghai',
+    allowAiPrivate: schedEl('schedAllowAiPrivate').checked,
+    allowAiGroup: schedEl('schedAllowAiGroup').checked,
+  });
+  schedMsg('schedSettingsMsg', r.ok ? '✅ 已保存' : '❌ ' + (r.error || '保存失败'), r.ok);
+  if (r.ok) refreshScheduler();
+});
+schedEl('schedLimitsSave').addEventListener('click', async () => {
+  const limits = {};
+  for (const [k] of SCHED_LIMIT_FIELDS) { const v = schedEl('schedLim_' + k).value; if (v !== '') limits[k] = Number(v); }
+  limits.quietEnabled = schedEl('schedQuietEnabled').checked;
+  limits.quietStart = schedEl('schedQuietStart').value.trim() || '00:00';
+  limits.quietEnd = schedEl('schedQuietEnd').value.trim() || '07:00';
+  const r = await api('/api/scheduler/settings', 'POST', { limits });
+  schedMsg('schedLimitsMsg', r.ok ? '✅ 已保存（超出范围的值已自动收敛）' : '❌ ' + (r.error || '保存失败'), r.ok);
+  if (r.ok) refreshScheduler();
+});
+schedEl('schedLimitsReset').addEventListener('click', async () => {
+  if (!confirm('把安全限制恢复成默认值？')) return;
+  const r = await api('/api/scheduler/settings', 'POST', { limits: schedState?.defaults?.limits || {} });
+  schedMsg('schedLimitsMsg', r.ok ? '✅ 已恢复默认' : '❌ ' + (r.error || '失败'), r.ok);
+  if (r.ok) refreshScheduler();
+});
+
+// ── 定时静默（运行总览 → 静默开关） ─────────────────────────────────────────
+// 判断、执行都在桥接（src/silence-schedule.js）；这里只负责编辑和展示。
+const SILENCE_W = ['', '一', '二', '三', '四', '五', '六', '日'];
+let silenceState = null;
+let silenceDraft = [];
+document.getElementById('silenceTz').innerHTML = schedTzOptionsHtml(false);
+const silEl = (id) => document.getElementById(id);
+
+function readSilenceRows() {
+  return [...document.querySelectorAll('#silenceRanges [data-sil-row]')].map((row) => {
+    const q = (sel) => row.querySelector(sel);
+    const days = q('[data-sil="days"]').value;
+    return {
+      id: row.dataset.silRow,
+      enabled: q('[data-sil="enabled"]').checked,
+      name: q('[data-sil="name"]').value.trim(),
+      start: q('[data-sil="start"]').value,
+      end: q('[data-sil="end"]').value,
+      days,
+      weekdays: [...row.querySelectorAll('[data-sil-wd]')].filter((c) => c.checked).map((c) => Number(c.dataset.silWd)),
+      skipHolidays: q('[data-sil="skipHolidays"]').checked,
+    };
+  });
+}
+
+function renderSilenceRanges() {
+  const box = silEl('silenceRanges');
+  if (!silenceDraft.length) { box.innerHTML = '<div class="meta">还没有时间段。点「＋ 添加时间段」，或者「一键填入 DeepSeek 高峰时段」。</div>'; return; }
+  box.innerHTML = `<div class="silence-row h"><span>启用</span><span>名称</span><span>时间段</span><span>哪些天</span><span></span></div>` + silenceDraft.map((r) => `
+    <div class="silence-row ${r.enabled ? '' : 'off'}" data-sil-row="${esc(r.id || '')}">
+      <label class="sched-chip" style="margin:0"><input type="checkbox" data-sil="enabled" ${r.enabled ? 'checked' : ''}> 启用</label>
+      <input type="text" data-sil="name" value="${esc(r.name || '')}" placeholder="上午高峰">
+      <div class="row" style="gap:6px;flex-wrap:nowrap"><input type="time" data-sil="start" value="${esc(r.start)}"><span>–</span><input type="time" data-sil="end" value="${esc(r.end)}"></div>
+      <div class="row" style="gap:6px">
+        <select data-sil="days">${[['every', '每天'], ['workdays', '工作日'], ['weekend', '周末'], ['custom', '自选']].map(([v, l]) => `<option value="${v}" ${r.days === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <span data-sil-custom ${r.days === 'custom' ? '' : 'hidden'}>${[1, 2, 3, 4, 5, 6, 7].map((d) => `<label class="sched-chip ${(r.weekdays || []).includes(d) ? 'on' : ''}" style="margin:0 2px 0 0;padding:2px 7px"><input type="checkbox" data-sil-wd="${d}" ${(r.weekdays || []).includes(d) ? 'checked' : ''}> ${SILENCE_W[d]}</label>`).join('')}</span>
+        <label class="sched-chip" style="margin:0"><input type="checkbox" data-sil="skipHolidays" ${r.skipHolidays ? 'checked' : ''}> 跳过法定节假日</label>
+      </div>
+      <button class="small danger" data-sil-del aria-label="删除这个时间段">删</button>
+    </div>`).join('');
+  box.querySelectorAll('[data-sil-row]').forEach((row) => {
+    row.querySelector('[data-sil="days"]').addEventListener('change', (e) => { row.querySelector('[data-sil-custom]').hidden = e.target.value !== 'custom'; });
+    row.querySelector('[data-sil="enabled"]').addEventListener('change', (e) => row.classList.toggle('off', !e.target.checked));
+    row.querySelectorAll('[data-sil-wd]').forEach((c) => c.addEventListener('change', () => c.parentElement.classList.toggle('on', c.checked)));
+    row.querySelector('[data-sil-del]').addEventListener('click', () => { silenceDraft = readSilenceRows().filter((x) => x.id !== row.dataset.silRow); renderSilenceRanges(); });
+  });
+}
+
+function renderSilence() {
+  const r = silenceState;
+  if (!r) return;
+  silEl('silenceEnabled').checked = !!r.config.enabled;
+  schedSetTz(silEl('silenceTz'), r.config.timezone);
+  document.querySelectorAll('[data-silence-opt]').forEach((c) => { c.checked = !!r.config.options[c.dataset.silenceOpt]; });
+  renderSilenceRanges();
+  const pill = silEl('silenceStatePill');
+  if (r.manual) { pill.textContent = '静默中 · 手动'; pill.className = 'pill r'; }
+  else if (r.active) { pill.textContent = `静默中 · 定时（${r.active.name}），到 ${r.active.untilText}`; pill.className = 'pill r'; }
+  else if (r.override) { pill.textContent = `正常 · 本段已临时恢复，到 ${r.override.untilText}`; pill.className = 'pill b'; }
+  else { pill.textContent = '正常'; pill.className = 'pill g'; }
+  const up = (r.upcoming || []).slice(0, 4).map((x) => `${x.name} ${x.startText.replace(/（.*）/, '')}–${x.endText.slice(11)}`);
+  silEl('silenceUpcoming').textContent = r.config.enabled
+    ? (up.length ? `接下来：${up.join('；')}` : '接下来 14 天没有静默时段')
+    : '定时静默未开启';
+}
+
+async function refreshSilence() {
+  try {
+    const r = await api('/api/silence');
+    if (!r.ok) return;
+    silenceState = r;
+    silenceDraft = r.config.ranges.map((x) => ({ ...x }));
+    renderSilence();
+  } catch {}
+}
+
+silEl('silenceAdd').addEventListener('click', () => {
+  silenceDraft = readSilenceRows();
+  silenceDraft.push({ id: '', name: '', enabled: true, start: '12:00', end: '14:00', days: 'every', weekdays: [], skipHolidays: false });
+  renderSilenceRanges();
+});
+silEl('silencePeak').addEventListener('click', () => {
+  const preset = silenceState?.peakPreset || [];
+  // 已经有同一时间、同样「哪些天」的时间段就不再重复添加（保存后 id 会变，不能只按 id 判断）
+  const keep = readSilenceRows();
+  const same = (a, b) => a.start === b.start && a.end === b.end && a.days === b.days;
+  const added = preset.filter((p) => !keep.some((x) => same(x, p)));
+  silenceDraft = [...keep, ...added.map((p) => ({ ...p }))];
+  if (silEl('silenceTz').value !== 'Asia/Shanghai') schedSetTz(silEl('silenceTz'), 'Asia/Shanghai');
+  renderSilenceRanges();
+  silEl('silenceMsg').textContent = added.length ? `已填入 ${added.length} 个高峰时段（北京时间），确认后点「保存定时静默」` : '高峰时段已经都在列表里了';
+  silEl('silenceMsg').className = 'meta';
+});
+silEl('silenceSave').addEventListener('click', async () => {
+  const options = {};
+  document.querySelectorAll('[data-silence-opt]').forEach((c) => { options[c.dataset.silenceOpt] = c.checked; });
+  const r = await api('/api/silence', 'POST', { enabled: silEl('silenceEnabled').checked, timezone: silEl('silenceTz').value, ranges: readSilenceRows(), options });
+  silEl('silenceMsg').textContent = r.ok ? '✅ 已保存' : '❌ ' + (r.error || '保存失败');
+  silEl('silenceMsg').className = r.ok ? 'meta ok' : 'meta err';
+  if (r.ok) { silenceState = r; silenceDraft = r.config.ranges.map((x) => ({ ...x })); renderSilence(); }
+});
+setInterval(() => { if (currentConsolePage === 'overview') refreshSilence(); }, 60_000);
+
+refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshSilence(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);
 // 用量看板只在本页可见时轮询：既保证「实时」，又不让其它页白白多打两份接口。
 setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); refreshUsageChart(); refreshUsageRecent(); }, 3000);

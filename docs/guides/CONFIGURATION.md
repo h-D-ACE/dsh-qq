@@ -1,7 +1,7 @@
-# 配置说明（v0.3.0 新增字段）
+# 配置说明（v0.3.0 起新增的字段）
 
 原版字段（`dsh.*`、`snowluma.*`、`allow/deny`、`social*`、`slang` 等）的说明见 [../../README.md](../../README.md)「安装与配置」，含义未变。
-本文只列 v0.3.0 新增的三段与新增的工具开关。所有字段都可省略，省略即取下表默认值；**默认值都是安全的**。
+本文只列 v0.3.0 起新增的配置段、工具开关和状态文件。所有字段都可省略，省略即取下表默认值；**默认值都是安全的**。
 修改 `config.json` 后需要重启桥接；修改 `socialV2.tools.*` 还需要重启 DSH（MCP 工具清单在 DSH 启动时读取）。
 
 ## `continuity` —— 人际连续性
@@ -68,6 +68,13 @@ TOTP 秘密**不在** `config.json` 里：用 `npm run admin:totp-setup` 写入 
 | `personProfile` | `qq_get_person` / `qq_note_person` | 按 QQ 号查看/记录人物（按可见范围过滤；只能写当前会话作用域） |
 | `requestMode` | `qq_request_mode_change` | 只在 owner 私聊会话里登记申请；不能执行、不能确认 |
 | `crossGroup` | `qq_cross_group_query` | 还需要 `crossGroup.enabled` 与链接授权 |
+| `schedule`（v1.1.0） | `qq_schedule_create / list / update / delete` | AI 在管理员私聊里登记定时任务（定时任务的总开关在控制台「定时任务」页面，和这个工具开关是两回事）。见 [SCHEDULER.md](SCHEDULER.md) |
+| `handoverMemory`（v1.1.0） | —（不是工具） | 切到 agent 时，把二代仿真里 AI 在管理员私聊记下的长期记忆（最多 1500 字，只取管理员私聊）一起交接；`false` = 只交接最近的私聊往来 |
+
+## 定时任务与定时静默（v1.1.0）
+
+这两项的设置**不在 `config.json` 里**，在桥接控制台改（「定时任务」页面；「运行总览 → 静默开关」），保存在 `state/scheduler.json` 与 `state/silence-schedule.json`，改完立即生效、不用重启。
+说明见 [SCHEDULER.md](SCHEDULER.md)、[SILENCE.md](SILENCE.md)。
 
 ## 管理员私聊托付群会话（v0.4.2，默认关闭）
 
@@ -157,3 +164,7 @@ AI **收藏**群友的表情、**发送**收藏表情时，桥接会先自己下
 | `state/admin/audit.jsonl`（滚动 `.1`~`.5`） | 管理审计（哈希链） |
 | `state/admin/totp.json` | TOTP 秘密（如果用文件方式） |
 | `state/mode.json` | 原版的模式兜底文件，v0.3.0 额外写入 `level` |
+| `state/admin/owner-transcript.json` | （v1.0.3）owner 私聊往来记录，切换模式时交接用；脱敏、限长，0600 |
+| `state/scheduler.json` | （v1.1.0）定时任务：总开关、默认时区、安全限制、任务列表、执行记录；0600 |
+| `state/silence-schedule.json` | （v1.1.0）定时静默：时间段、时区、静默期间的行为选项；0600 |
+| `state/role-seen.json` | （v1.1.0）每个会话读到的角色卡版本（只存会话 ID 与指纹，不存内容）；删掉只会让各会话下一次唤醒再收到一次当前角色卡；0600 |

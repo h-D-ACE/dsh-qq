@@ -253,3 +253,34 @@ test('⑤ 安全：L1→L2 的高权限会话不休眠；确认码不进交接�
     await h.ext.controller.panic();
   });
 });
+
+test('⑥ 私聊长期记忆：开关开着时切到 agent 一并交接（只取管理员私聊、不含群、已脱敏）；关掉就不带', async () => {
+  for (const on of [true, false]) {
+    await withHarness(on ? {} : { socialV2: { tools: { handoverMemory: false } } }, async (h) => {
+      h.setMode('reserved2');
+      const ownerSt = h.getSocialV2State(OWNER_KEY);
+      ownerSt.activeTopics = [{ text: '帮管理员修电脑，日志在 /Users/alice/log.txt', lastMentionAt: Date.now() }];
+      ownerSt.pendingThoughts = [{ text: '想问问电脑修好没', expiresAt: Date.now() + 3600_000 }];
+      h.getSocialV2State(GROUP_KEY).activeTopics = [{ text: '群里的秘密话题', lastMentionAt: Date.now() }];
+      await h.ext.controller.consoleSet({ mode: 'closed-agent', level: 'L1' });
+      await settle();
+      await h.handleIncoming('private', OWNER, ownerPm('继续吧'), h.cfg);
+      await settle();
+      const agentSid = h.state.sessions[OWNER_KEY];
+      const first = promptText(h.calls.prompts.filter((p) => p.sessionId === agentSid).at(0));
+      if (on) {
+        assert.match(first, /【你在 QQ 私聊里记下的长期记忆 · 桥接提供】/);
+        assert.match(first, /帮管理员修电脑/);
+        assert.match(first, /想问问电脑修好没/);
+        assert.ok(!first.includes('/Users/alice'), '路径打码');
+      } else {
+        assert.ok(!first.includes('长期记忆'), '开关关掉就不带');
+      }
+      assert.ok(!first.includes('群里的秘密话题'), '任何群的记忆都不进 agent');
+      await h.ext.controller.panic();
+    });
+  }
+  const html = fs.readFileSync(new URL('../public/console.html', import.meta.url), 'utf8');
+  assert.match(html, /data-v2-tool="handoverMemory"/, '二代工具开关里有这一项');
+  assert.match(html, /data-v2-tool="schedule"/, '定时任务工具也有开关');
+});

@@ -9,11 +9,11 @@
 1. **克隆/获取仓库**：
 
    ```bash
-   git clone https://github.com/Derpyu520/qq-bridge.git
-   cd qq-bridge
+   git clone https://github.com/h-D-ACE/dsh-qq.git
+   cd dsh-qq
    ```
 
-   > 默认分支 `main` 即当前版本 **v0.1.5**（适配 DSH 0.1.5-rc.1），clone 下来无需切换分支。
+   > 默认分支 `main` 即当前版本 **v1.1.0**（适配 DSH 0.2.0-rc.2 与 0.2.1），clone 下来无需切换分支；也可以从 [Releases](https://github.com/h-D-ACE/dsh-qq/releases) 下载 ZIP。完整部署以 [../DSH_DEPLOYMENT.md](../DSH_DEPLOYMENT.md) 为准。
 
 2. **安装依赖**：
 

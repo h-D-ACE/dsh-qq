@@ -21,6 +21,12 @@ import * as dshModel from '../src/dsh-model.js';
 import * as quoteForward from '../src/quote-forward.js';
 import * as modeHandover from '../src/mode-handover.js';
 import * as roleCard from '../src/role-card.js';
+import { createScheduler } from '../src/scheduler/engine.js';
+import { parseRemindCommand, REMIND_HELP, formatTaskList } from '../src/scheduler/commands.js';
+import { createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt } from '../src/scheduler/notes.js';
+import { describeInstant } from '../src/scheduler/time.js';
+import { createSilenceSchedule, peakPresetRanges, describeRange } from '../src/silence-schedule.js';
+import * as roleRefreshLib from '../src/role-refresh.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
 import * as presetPrompt from '../src/preset-prompt.js';
@@ -147,6 +153,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     extractMediaFromSegments, segmentsToText, fetchOneBotImage, fetchMediaData, resolveMediaList,
     resolveReplyInfo, seenForwardIds, forwardRawCache,
     ownerTranscript, pendingHandover, reconcileSessionPolicies, recordOwnerTranscript, recordSentMessagesV2,
+    scheduler, scheduledNotes, handleRemindCommand, silence, scheduledSilenceFor, silenceTick, shouldBlockSilentReply,
+    roleRefresh, currentRoleFingerprintV2, roleRefreshBlockV2, refreshRoleNowV2, currentRoleHintV2,
     emojiCdnCandidates, getImageDimensions, acceptImageBuffer, MAX_MEDIA_BYTES, bot,
     isConversationBusyV2, v2TurnStartAt, turnLeaseNoted, TURN_BUSY_LEASE_MS,
     settingFromDshNamespace, selfIdentityTextV2, buildWakeReminderPromptV2,
@@ -184,7 +192,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker, ...stickerLimits,
-    ...modelPrices, ...dshModel, ...quoteForward, ...modeHandover, ...roleCard, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...bridgeExt,
+    ...modelPrices, ...dshModel, ...quoteForward, ...modeHandover, ...roleCard, ...tokenLedger,
+    createScheduler, parseRemindCommand, REMIND_HELP, formatTaskList, createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt, describeInstant, createSilenceSchedule, peakPresetRanges, describeRange, ...roleRefreshLib, ...voiceLib, ...stateAcl, ...presetPrompt, ...bridgeExt,
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事（同理见下面的
     // cleanupTemp / processAudioVolume 桩）。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),

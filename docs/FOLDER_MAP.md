@@ -23,13 +23,14 @@ DSH/                         ← 工作区根（不是仓库根）
 | --- | --- | --- |
 | `src/` | **桥接内核**：主程序、DSH 客户端、三个 MCP server、黑话/表情/语音共享库 | 不能动。`bridge.js` 是主程序（约 10,400 行，QSH 计划拆分）；`voice-core.js` 与 `snowluma-conn.js` 是**独立工具也在用的单一实现**。**目录里只应有 `.js`**：曾经的 `bridge.js.bak-*` 会污染全局搜索并看起来像 module，2026-09-20 已移出（见下） |
 | `src/social/` `src/admin/` `src/lib/` `src/bridge-extensions.js` | **v0.3.0 新增**：人物库与入群事件、管理通道（模式控制器/TOTP/审批/审计/命令解析）、版本化 JSON 存储；`bridge.js` 只接线 | 新功能的业务规则都在这里，配套离线测试 `scripts/test-continuity.mjs` / `test-admin-control.mjs` / `test-integration-v030.mjs` |
+| `src/dsh-model.js` `src/quote-forward.js` `src/mode-handover.js` `src/scheduler/` `src/silence-schedule.js` `src/role-refresh.js` | **v1.0.2～v1.1.0 新增的独立模块**：控制台选模型、引用合并转发、切换不失忆（休眠与交接）、定时任务（time / schedule / engine / commands / notes）、定时静默、人格切换后重新读卡；`bridge.js` 只接线 | 各配一个离线测试：`test-dsh-model` / `test-quote-forward` / `test-mode-handover` / `test-scheduler` / `test-silence-schedule` / `test-role-refresh`，都在 `test:audit` 里 |
 | `src/launcher/` `public/control-center.html` `control-center.bat` `control-center-hidden.vbs` | **v0.4.0 控制中心**：托管桥接与 SnowLuma 子进程的本地网页（见 guides/CONTROL_CENTER.md） | 配套测试 `scripts/test-control-center.mjs` |
 | `interface-platform/`（独立子程序：自己的 `package.json`、测试和 `state/`） | **接口平台**（M1）：统一接入实例/账号/事件/发送，QQ 经 SnowLuma / NapCat 连接器；OneBot v11 兼容入口供桥接过渡使用。本仓库只经 HTTP 接口与它通信（见它的 README.md、docs/CONTRACT.md、docs/MILESTONES.md） | 自带测试 `interface-platform/test/`；`scripts/test-platform.mjs` 一并跑（缺失即失败）；它的 `state/`（令牌、实例配置）不入库 |
 | `scripts/` | 调试 / 测试 / 一次性运维脚本（见第二节命名约定） | 测试脚本不能删；`cleanup-*` / `fix-*` / `patch-*` / `diag-*` 多为历史遗留 |
 | `dsh/` | 要装进 DSH 的东西：`agent-presets/qq-chat`、`agent-presets/qq-chat-v2`（preset 的**权威源**，含工具白名单 `qq-tool-restrict.mjs` 的 re-export 壳）。DSH 0.1.7 起 preset 以 bundle patch 形式安装，patch 由 `scripts/build-agent-preset-patches.mjs` 从这里的源生成到 `plugins/qq-agent-presets/presets/` | 改 preset 会影响所有人设行为；改完必须重新生成 patch |
 | `plugins/` | DSH 插件：`qq-mode-console`（暴露 `qq-mode` 设置命名空间；**只有 host 半**，浏览器 UI 卡片未实现）、`qq-agent-presets`（生成两个 preset 行 + 携带唯一的 `qq-tool-restrict` 权威实现） | 改了要重装/重启 DSH |
 | `public/` | 浏览器静态资源：`console.html`（桥接自带控制台，127.0.0.1:3100） | 目录里只应有这一个文件；历史备份 `console.html.bak` 已移出仓库 |
-| `roles/` | 人格卡（`小鲸鱼.md` / `傲娇助手.md` / `README.md`）：控制台「人格与角色」页可编辑，保存即生效 | 用户内容，别乱动 |
+| `roles/` | 人格卡（`小鲸鱼.md` / `傲娇助手.md` / `README.md`）：控制台「人格与角色」页可编辑，保存即生效（二代仿真里是下一次唤醒或选「立即」时生效） | 用户内容，别乱动 |
 | `assets/` | 仓库用图片等资源（`deepseek娘.png`；`project-intro.mp4` 已改为 Release 附件、不入库） | 别加体积大的二进制 |
 | `audio/` | **语音库**（用户的真实音频）。桥接的 AI 语音工具只能发这里的文件；独立 `voice-tool` 默认也指向这里 | **用户文件，绝不删除/移动** |
 | `state/` | **运行时数据**（会话映射、模式、角色、黑话库、日志、锁、令牌）。`.gitignore` 排除 | **用户数据，绝不删除/移动** |
@@ -77,7 +78,8 @@ DSH/                         ← 工作区根（不是仓库根）
 docs/
 ├── README.md     # 文档索引（每篇一句话 + 是否仍然有效）  ← 先看这个
 ├── FOLDER_MAP.md # 本文件
-├── guides/       # 面向使用者/运维：DSH_SETUP / DSH_020_ADAPTATION / SECURITY_BASELINE / TOKEN_USAGE_CONSOLE / CONSOLE-UI-TESTING / PRIVACY / PROJECT_GUIDE / VOICE
+├── guides/       # 面向使用者/运维：DSH_SETUP / DSH_020_ADAPTATION / SECURITY_BASELINE / CONFIGURATION / ADMIN_CHANNEL / CONTINUITY / CONTROL_CENTER / SCHEDULER / SILENCE / TESTING / TOKEN_USAGE_CONSOLE / CONSOLE-UI-TESTING / PRIVACY / VOICE
+├── release/      # 发布说明（RELEASE_NOTES_v*.md）与发布流程 PUBLISHING.md
 ├── design/       # 设计与规划：GEN2_SIMULATION_PLAN / SOCIAL_MODE_PLAN / DSH_QQ_TOOLS_PLAN / 真人语感策略
 ├── research/     # 调研：SnowLuma功能调研 / 免打扰 / 表情包 / 本地模型选型
 ├── audits/       # 审查与优化报告（最新的全项目体检是 AUDIT_REPORT_2026-09-20）

@@ -88,3 +88,6 @@ audio/
 
 # macOS 本机生成的启动 App（npm run mac-app；含系统自带的 applet，不入库、不发布）
 /*.app/
+
+# 本机调教用的人格副本（控制台「另存为副本」生成），不随仓库发布；默认人格是 roles/小鲸鱼.md
+/roles/小鲸鱼-2.md

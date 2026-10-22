@@ -1,17 +1,18 @@
 # QQ ↔ DeepSeek Harness Bridge (qq-bridge-enhanced)
 
-**Supported systems: Windows · macOS · Linux** (qq-bridge-enhanced v1.0.3)
+**Supported systems: Windows · macOS · Linux** (qq-bridge-enhanced v1.1.0 · repository <https://github.com/h-D-ACE/dsh-qq>)
 
 **English**: [README.en.md](README.en.md) | **中文**: [README.md](README.md)
 
-> **qq-bridge-enhanced v1.0.3** — a fork of [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) v0.2.0-r3 (with the upstream r4 fixes merged in; origin and licensing in [NOTICE.md](NOTICE.md)).
+> **qq-bridge-enhanced v1.1.0** ([h-D-ACE/dsh-qq](https://github.com/h-D-ACE/dsh-qq)) — a fork of [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) v0.2.0-r3 (with the upstream r4 fixes merged in; origin and licensing in [NOTICE.md](NOTICE.md)).
 > It turns one QQ account into an "AI group member" driven by DeepSeek Harness (DSH) agents, and runs on **Windows, macOS and Linux**.
 > Most documentation is in Chinese: the step-by-step deployment guide is [docs/DSH_DEPLOYMENT.md](docs/DSH_DEPLOYMENT.md), the changelog is [CHANGELOG.md](CHANGELOG.md),
 > and the documentation index is [docs/README.md](docs/README.md).
+> Issues and release downloads: [Issues](https://github.com/h-D-ACE/dsh-qq/issues) · [Releases](https://github.com/h-D-ACE/dsh-qq/releases).
 
 QQ friends/groups become DSH conversations, and agent replies (including questions and tool approvals) are sent back to QQ.
 
-## What's in v1.0.x
+## What's in v1.x
 
 | Feature | In one line | Doc (Chinese) |
 | --- | --- | --- |
@@ -24,10 +25,13 @@ QQ friends/groups become DSH conversations, and agent replies (including questio
 | Owner admin channel | Private chat `/mode agent L1~L3` → confirmation code → (TOTP for L3) → switch; `/panic` falls back at once | [ADMIN_CHANNEL.md](docs/guides/ADMIN_CHANNEL.md) |
 | Permission tiers | L0 group member / L1 read-only agent / L2 workspace read-write / L3 full access with per-action approval; there is no approval-free mode | same |
 | Approvals, fallback, audit | Numbered approvals `#n` with the real command arguments; idle high-privilege sessions fall back after 30 minutes; every change is reported to the owner; hash-chained audit log | same |
-| Mode switches keep memory (v1.0.3) | Entering agent mode puts the group / private chat sessions to sleep instead of archiving them; after fallback they resume as-is. The new agent session gets a handover of the recent private chat (owner private only, redacted). High-privilege sessions are still archived | [ADMIN_CHANNEL.md](docs/guides/ADMIN_CHANNEL.md) |
+| Mode switches keep memory (v1.0.3) | Entering agent mode puts the group / private chat sessions to sleep instead of archiving them; after fallback they resume as-is. The new agent session gets a handover of the recent private chat (owner private only, redacted; since v1.1.0 it can also include the AI's long-term notes from that chat). High-privilege sessions are still archived | [ADMIN_CHANNEL.md](docs/guides/ADMIN_CHANNEL.md) |
+| Scheduled tasks (v1.1.0) | Send a fixed message, or have the AI say something, at set times in a chosen time zone: daily / weekly / workdays / monthly / random N times / cron and more, with a live preview of the next 5 runs. Also from the owner's private chat via `/remind` or by asking the AI; group targets need the owner's confirmation | [SCHEDULER.md](docs/guides/SCHEDULER.md) |
+| Scheduled silence (v1.1.0) | Time ranges (several, each with its own switch, chosen days and time zone) during which the AI is not woken at all, to save tokens; messages are still recorded, and conversations that addressed the AI get one wake when the range ends. One click fills in DeepSeek's peak hours | [SILENCE.md](docs/guides/SILENCE.md) |
+| Persona changes take effect (v1.1.0) | In simulation mode (`reserved2`), switching or editing the persona now reaches running conversations at their next wake (or immediately, if you choose), without recreating sessions; memory and group rules are untouched | [roles/README.md](roles/README.md) |
 | Quoted merged forwards (v1.0.3) | Quoting an older merged forward no longer stalls the message for 30 s; the AI can open the quoted forward (nested ones too), results are cached | [CHANGELOG.md](CHANGELOG.md) |
 | DSH model picker | Provider / model / reasoning effort as three linked selects fed by DSH's own model catalog, applied from the next message without a restart; warns about third-party providers (chat content leaves DeepSeek), turns images into text for models that can't see images, and marks unpriced models as estimated | [CONFIGURATION.md](docs/guides/CONFIGURATION.md) |
-| DSH 0.2.1 | Works with DSH 0.2.0-rc.2 and 0.2.1; the 0.2.1 desktop app's random port is detected automatically, and the bridge follows it after DSH restarts | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
+| DSH 0.2.1 | Works with DSH 0.2.0-rc.2 and 0.2.1 (v1.1.0 was tested on the 0.2.1-rc.2 desktop app); the 0.2.1 desktop app's random port is detected automatically, and the bridge follows it after DSH restarts | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
 
 ## Deployment (no-window launchers)
 
@@ -86,7 +90,7 @@ Control center 127.0.0.1:3099 manages the bridge, the interface platform and the
   event stream; verified on DSH 0.2.0-rc.2 and 0.2.1. The per-session model comes from `config.json`'s `dsh.model` (default `deepseek-flash`).
 - **Agent tools**: three bundled MCP servers expose a restricted QQ toolset (`qq_status`, `qq_get_group_history`, `qq_send_group_message`, `qq_reply`, …),
   a read-only host probe, and a read-only `web_search` / `web_fetch` pair with SSRF protection. The AI has no tool that starts or stops a QQ backend, and no privilege-escalation tool.
-- **Bridge console** (`http://127.0.0.1:3100`, opened from the control center with the token filled in): mode switching, personas, whitelist/admin settings,
+- **Bridge console** (`http://127.0.0.1:3100`, opened from the control center with the token filled in): mode switching, personas, scheduled tasks, silence (manual and scheduled), whitelist/admin settings,
   slang library (candidates split into "to research" / "researched"), memory, stickers, and token usage & cost
   (see [docs/guides/TOKEN_USAGE_CONSOLE.md](docs/guides/TOKEN_USAGE_CONSOLE.md)).
 
@@ -110,12 +114,12 @@ Control center 127.0.0.1:3099 manages the bridge, the interface platform and the
 ## Repository layout
 
 ```
-qq-bridge-enhanced/
+qq-bridge-enhanced/            # the cloned folder is named dsh-qq
   config.example.json        # sanitized config template (the real config.json is never in the repo)
   control-center-hidden.vbs  # Windows no-window launcher (control-center.bat = with a small window)
   control-center.command     # macOS launcher in Terminal; `npm run mac-app` builds the no-window app
   interface-platform/        # the interface platform (own package.json, tests and state/)
-  src/                       # bridge core, MCP servers, control center (src/launcher/), social modules
+  src/                       # bridge core, MCP servers, control center (src/launcher/), feature modules (scheduler/, silence-schedule.js, role-refresh.js, …)
   public/                    # control center and bridge console web pages
   dsh/agent-presets/         # DSH agent preset templates; plugins/ holds the generated DSH bundles
   roles/                     # persona cards
@@ -128,8 +132,8 @@ The standalone **voice sender tool** lives outside this repository (sibling fold
 
 ## Testing
 
-`npm run test:audit` runs the offline regression suite (no credentials, DSH, QQ or network): 60 scripts. On macOS and Linux, `test-console-encoding.mjs` fails by design
-(it checks the Windows console's `chcp`), so expect 59/60 there. The interface platform has its own suite: `cd interface-platform && npm test`.
+`npm run test:audit` runs the offline regression suite (no credentials, DSH, QQ or network): 63 scripts. On macOS and Linux, `test-console-encoding.mjs` fails by design
+(it checks the Windows console's `chcp`), so expect 62/63 there. The interface platform has its own suite: `cd interface-platform && npm test`.
 Test list and conventions: [docs/guides/TESTING.md](docs/guides/TESTING.md). `npm run self-test` runs a DSH-side link test (needs DSH, no QQ).
 
 ## Compliance

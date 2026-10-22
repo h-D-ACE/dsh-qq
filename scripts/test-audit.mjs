@@ -111,6 +111,9 @@ const tests = [
   'test-dsh-model.mjs',
   'test-quote-forward.mjs',
   'test-mode-handover.mjs',
+  'test-scheduler.mjs',
+  'test-silence-schedule.mjs',
+  'test-role-refresh.mjs',
   // AI 收藏表情的后端适配：SnowLuma 照旧 base64://；NapCat 只收本地路径时改用桥接自建的受控临时文件（用完即删）。
   'test-sticker-collect.mjs',
 ];
