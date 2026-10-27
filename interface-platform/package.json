@@ -1,6 +1,6 @@
 {
   "name": "interface-platform",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "license": "MIT",
   "description": "接口平台：统一接入多聊天平台的账号、事件与发送；当前提供 QQ（SnowLuma 连接器）与 OneBot v11 兼容入口。零运行时依赖。",

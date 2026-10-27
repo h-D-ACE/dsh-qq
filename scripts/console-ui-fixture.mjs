@@ -612,6 +612,9 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             hint: '用 qq_send_voice 传 name 即可把其中一个当语音发出去',
           });
           case '/api/slang': return json({ ok: true, entries: state.slang, config: state.slangConfig });
+          case '/api/compact/config': return json({ ok: true, mode: state.compactMode || 'early', thresholdTokens: state.compactThreshold || 300000, cooldownMinutes: 120, min: 50000, max: 800000, dshApprox: 800000, sessions: [{ key: 'group:10001', inputTokens: 680000, lastAttemptAt: null }, { key: 'group:10002', inputTokens: 120000, lastAttemptAt: null }] });
+          case '/api/roles/defaults': return json({ ok: true, current: '小鲸鱼', defaults: [{ name: '傲娇助手', exists: !!state.restoredTsundere, modified: false }, { name: '小鲸鱼', exists: true, modified: !state.restoredWhale }] });
+          case '/api/stickers/describe': return json({ ok: true, total: 21, undescribed: state.stickerDescribed ? 0 : 10, running: false, progress: { done: 0, total: 0 }, last: state.stickerDescribed ? { ok: true, text: '补好 10 张，其中 2 张偏凶或带粗口，已标「慎用」，所有表情都有说明了' } : null, blocker: '', model: 'deepseek-flash', max: 20 });
           // state/ 的 ACL 收紧结果：用离线示例值演示「未收紧」的告警条（Windows 上未提权时的真实情况）
           // 命令本身必须来自 `src/state-acl.mjs`，不能在这里另抄一份：这里曾经抄的是
           // `icacls DIR /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" /T /C` —— 正是那句
@@ -633,6 +636,15 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
       }
       if (method === 'POST') {
         switch (path) {
+          case '/api/compact/config': {
+            if (body.mode === 'early' && !(Number(body.thresholdWan) >= 5 && Number(body.thresholdWan) <= 80)) return json({ ok: false, error: '压缩阈值要在 5～80 万 token 之间' }, 400);
+            state.compactMode = body.mode; if (body.mode === 'early') state.compactThreshold = Number(body.thresholdWan) * 10000;
+            return json({ ok: true, mode: body.mode, thresholdTokens: state.compactThreshold || 300000 });
+          }
+          case '/api/roles/restore-default':
+            if (body.name === '小鲸鱼') { state.restoredWhale = true; return json({ ok: true, name: '小鲸鱼', created: false, unchanged: false, backup: '小鲸鱼-20261026-090000.md', refresh: { apply: body.apply || 'nextWake', woke: [], pending: 2 } }); }
+            state.restoredTsundere = true; return json({ ok: true, name: body.name, created: true, unchanged: false, backup: null, refresh: { apply: body.apply || 'nextWake', notActive: true } });
+          case '/api/stickers/describe': state.stickerDescribed = true; return json({ ok: true, started: true, total: 21, undescribed: 10, running: true, progress: { done: 0, total: 10 }, last: null, blocker: '', model: 'deepseek-flash', max: 20 });
           case '/api/mode': state.mode = body.mode; state.closedAgentPreset = body.closedAgentPreset; return json({ ok: true, dshSynced: true });
           case '/api/role': state.role = body.role; return json({ ok: true, role: body.role, refresh: body.apply === 'immediate' ? { apply: 'immediate', mode: 'reserved2', woke: 2, pending: 0 } : { apply: 'nextWake', mode: 'reserved2', woke: 0, pending: 3 } });
           case '/api/roles/create': state.roles.push(body.name); state.roleContents[body.name] = body.content ?? ''; return json({ ok: true, role: body.name, warnings: [] });

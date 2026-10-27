@@ -1,6 +1,6 @@
 # QQ ↔ DeepSeek Harness 桥接
 
-**支持系统：Windows · macOS · Linux**（qq-bridge-enhanced v1.1.0 · 仓库 <https://github.com/h-D-ACE/dsh-qq>）
+**支持系统：Windows · macOS · Linux**（qq-bridge-enhanced v1.1.1 · 仓库 <https://github.com/h-D-ACE/dsh-qq>）
 
 **English**: [README.en.md](README.en.md) | **中文**: [README.md](README.md)
 
@@ -14,7 +14,7 @@
 
 ---
 
-## 🆕 增强版（qq-bridge-enhanced v1.1.0）—— 支持 Windows、macOS、Linux
+## 🆕 增强版（qq-bridge-enhanced v1.1.1）—— 支持 Windows、macOS、Linux
 
 > 本仓库（<https://github.com/h-D-ACE/dsh-qq>）是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) v0.2.0-r3 的二次开发版本（来源与授权见 [NOTICE.md](NOTICE.md)），已合并上游 r4 的修复。
 > 原版的全部功能（消息桥接、多群白名单、reserved2 二代仿真、QQ 自主工具、人格、控制台、安全守卫、令牌统计、MCP、SnowLuma 健康检查）保持不变；
@@ -39,8 +39,11 @@
 | 定时任务（v1.1.0） | 按时区到点发消息或叫 AI 来说；每天 / 每周 / 工作日 / 每月 / 随机几次 / cron 等重复方式，实时预览接下来 5 次；也能在管理员私聊里用 `/remind` 或让 AI 登记，发往群的要你确认 | [SCHEDULER.md](docs/guides/SCHEDULER.md) |
 | 定时静默（v1.1.0） | 按时间段（可多段、可选哪些天和时区）让 AI 停止一切唤醒省 token；消息照记，结束后给被直接找过的会话补一次唤醒；一键填入 DeepSeek 高峰时段 | [SILENCE.md](docs/guides/SILENCE.md) |
 | 人格切换即时生效（v1.1.0） | 二代仿真里切换 / 修改人格后，下一次唤醒（或选「立即」马上）把新卡交给各会话，不用等会话重建；记忆和群规则不动 | [roles/README.md](roles/README.md) |
+| 长会话自动压缩（v1.1.1） | 二代会话上一步读的上下文超过阈值（默认 30 万 token，控制台可调 5～80 万，或交给 DSH 自己约 80 万时压）就在空闲时压缩一次；黑话表、表情块只在变化时完整注入。实测群 A 每步从 679k 降到 33k | [CONFIGURATION.md](docs/guides/CONFIGURATION.md) |
+| 令牌抄错自动恢复（v1.1.1） | AI 把会话令牌抄错一两位时给出明确提示，连错 3 次自动换新令牌（不动会话和记忆）；二代里被拦的内部输出不再往群里发拦截通知 | [CHANGELOG.md](CHANGELOG.md) |
+| 易用性（v1.1.1） | 定时静默可选「只在被 @ 或私聊时唤醒」；控制台「恢复默认人格」（改过的先备份）；总览页直接改发言上限、看被拦了几次；一键让 AI 看图补表情说明 | [SILENCE.md](docs/guides/SILENCE.md) |
 | 引用合并转发（v1.0.3） | 引用一条较早的合并转发时不再卡住整条消息；AI 能打开引用里的转发（含嵌套），读取结果缓存 | [CHANGELOG.md](CHANGELOG.md) |
-| DSH 0.2.1 | 兼容 DSH 0.2.0-rc.2 与 0.2.1（v1.1.0 在 0.2.1-rc.2 桌面版上实测）；0.2.1 桌面版的随机端口自动识别、DSH 重启后自动跟上 | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
+| DSH 0.2.1 | 兼容 DSH 0.2.0-rc.2 与 0.2.1（v1.1.1 在 0.2.1-rc.2 桌面版上实测）；0.2.1 桌面版的随机端口自动识别、DSH 重启后自动跟上 | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
 
 ### 部署（无窗口版）
 
@@ -86,7 +89,7 @@ NapCat 要在它的 WebUI 里开启 WebSocket 服务端 `127.0.0.1:3001`）。�
 
 ---
 
-> ⚠️ **当前版本 `v1.1.0`，适配 DSH 0.2.0-rc.2 与 0.2.1**（0.2.1-rc.2 桌面版上实测；协议面逐项核对：`npm run verify:adaptation`）。
+> ⚠️ **当前版本 `v1.1.1`，适配 DSH 0.2.0-rc.2 与 0.2.1**（0.2.1-rc.2 桌面版上实测；协议面逐项核对：`npm run verify:adaptation`）。
 > 鉴权用 `~/.dsh` 里持久化的浏览器会话签名密钥**离线铸造 Cookie**（DSH 0.1.7 起进程启动 token 只存在于内存、不再落盘）；
 > agent preset 是 `@deepseek-ai/dsh-agent-preset` Cordis 行（由 `setup-dsh.mjs` 写入，旧的 `~/.dsh/.agent-presets/` 目录机制已废）。
 > DSH 0.2.0 时的适配改动（会话待处理队列解析、QQ 安全守卫的工具名单对账等）见 [docs/guides/DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md)。
@@ -407,6 +410,7 @@ SnowLuma 同一个账号的 **HTTP token（默认 3000 端口）与 WebSocket to
 - agent 回复在回合结束时一次性发送（不做流式逐字转发）；回复超过 `socialV2.send.maxMessageChars`（默认 500 字，可用 `social.maxReplyChars` 调整）自动按句读/URL 边界分段
 - 图片及部分表情可以通过安全下载接入多模态模型；语音/视频以及无法取得图片字节的消息仍使用占位文本
 - **发**语音是支持的（独立工具的图形界面 / 命令行 / AI 工具，见 `docs/README.md` 的文档索引）；但**收**到的语音目前只显示占位文本，不做语音转写入上下文
+- **AI 发网上的图默认关闭**（`socialV2.tools.webImage`）：打开后只在管理员私聊里能「找一张 xxx 的图发我」，必须先看图再发，图由桥接安全下载；搜索词会发给 Bing
 - **AI 发语音默认关闭**（`socialV2.voice.enabled` 与 `tools.sendVoice` 默认 `false`）：先把音频放进 `audio/`，在 `config.json` 里打开 `socialV2.voice.enabled`、在控制台「二代仿真 → 工具开关」勾上 `qq_send_voice`，再重启 DSH；AI 只能发语音库里现成的音频，不能把任意文字念出来（没有文字转语音）；你自己发语音不受这个开关影响
 - agent 的 Markdown 回复会转成纯文本（链接保留 `文字 (url)` 形式）
 - `@snowluma/sdk` 的 npm 发布版存在 ESM 扩展名 bug，本仓库通过 postinstall 补丁修复（见 `scripts/patch-snowluma-sdk.mjs`）

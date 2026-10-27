@@ -99,6 +99,8 @@ export function createRoleRefreshTracker({ file, now = Date.now, onError = () =>
         .filter(([key, sid]) => this.needsRefresh(key, sid, fp))
         .map(([key]) => key);
     },
+    /** 会话上下文被压缩后：下次唤醒重新完整给一次角色卡（原来那份可能被压进摘要里了）。 */
+    forget(key) { if (entries[key]) { delete entries[key]; save(); } },
     get(key) { return entries[key] ? { ...entries[key] } : null; },
     size: () => Object.keys(entries).length,
   };

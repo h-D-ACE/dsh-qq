@@ -129,7 +129,8 @@
 
 ### 离线回归
 
-- `npm run test:audit`：63 个离线回归脚本，macOS 上 **62/63**。没过的 `test-console-encoding.mjs` 只在 Windows 上能通过。
+- `npm run test:audit`：63 个离线回归脚本。发布包解压后从零 `npm ci` 验证：macOS 与 Linux（Docker `node:22-bookworm`）上都是 **62/63**。没过的 `test-console-encoding.mjs` 只在 Windows 上能通过。
+- 接口平台：macOS 26 项全部通过；Linux 容器里 25 项通过、1 项跳过（「目录读不了」的用例在 root 下无法构造）。
 - 新增：
   - `test-scheduler.mjs`：时区与夏令时、各种重复方式、cron、限额、免打扰、错过补发、AI 登记的权限。
   - `test-silence-schedule.mjs`：时间段、跨午夜、节假日、高峰预设、手动优先、静默期间不唤醒、结束补唤醒。

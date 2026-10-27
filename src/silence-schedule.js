@@ -9,6 +9,9 @@
 //   skipHolidays：跳过法定节假日（内置节假日表只有放假日，调休补班的周末不算工作日）
 // - 跨午夜（如 23:00–07:00）以开始那天为准：「周五 23:00–07:00」= 周五晚到周六早。
 // - 天数、时刻都按面板选的时区算，与机器时区无关。
+// - 唤醒档位（见 wakeTierOf）：全停 / 只在被 @ 或私聊时唤醒 / 照常唤醒只拦发送。
+//   「只在被 @ 或私聊时唤醒」：有人 @ AI、引用回复 AI 或私聊 AI 时，这个会话照常放行 DIRECT_PASS_MS（能接着聊几句），
+//   其余会话和主动冒泡、睡醒等唤醒照样停。
 // - 手动开关优先：手动开启静默时一直静默；定时静默期间点「恢复正常」= 这一段临时恢复（到这一段结束），下一段照常。
 //
 // 数据存在 state/silence-schedule.json（0600，不进仓库）。
@@ -26,12 +29,27 @@ export const DEFAULT_SILENCE = Object.freeze({
   ranges: [],
   options: Object.freeze({
     stopWakes: true,          // 停止群聊 AI 的一切唤醒（真正省钱）
+    directWakes: false,       // 停唤醒时仍放行「被 @ / 引用回复 AI / 私聊」：放行这个会话一小段时间（DIRECT_PASS_MS）
     recordMessages: true,     // 群消息照样记下（不唤醒），恢复后 AI 能补看
     pauseAiTasks: true,       // 定时任务里「叫 AI 来说」发往群的暂停（任务可单独设「照常执行」）；固定文字照发
     includeOwnerPrivate: false, // 管理员私聊也一起静默
     catchUpOnEnd: true,       // 静默期间有人 @ / 叫名字 / 提问 / 拍一拍 / 私聊，结束时补一次唤醒
   }),
 });
+
+/** 「只在被 @ 或私聊时唤醒」档位：被直接找一次，这个会话照常放行多久（能接着聊几句）。 */
+export const DIRECT_PASS_MS = 10 * 60_000;
+
+/**
+ * 静默期间的唤醒档位（控制台的三选一）：
+ *   normal = 照常唤醒，只拦发送（stopWakes=false）；
+ *   direct = 只在被 @ / 引用回复 AI / 私聊时唤醒（stopWakes=true, directWakes=true）；
+ *   stop   = 全停（stopWakes=true, directWakes=false）。
+ */
+export function wakeTierOf(options = {}) {
+  if (options.stopWakes === false) return 'normal';
+  return options.directWakes === true ? 'direct' : 'stop';
+}
 
 const minutesOf = (hhmm) => { const p = parseTime(hhmm); return p.hour * 60 + p.minute; };
 

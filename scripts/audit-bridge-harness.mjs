@@ -25,8 +25,14 @@ import { createScheduler } from '../src/scheduler/engine.js';
 import { parseRemindCommand, REMIND_HELP, formatTaskList } from '../src/scheduler/commands.js';
 import { createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt } from '../src/scheduler/notes.js';
 import { describeInstant } from '../src/scheduler/time.js';
-import { createSilenceSchedule, peakPresetRanges, describeRange } from '../src/silence-schedule.js';
+import { createSilenceSchedule, peakPresetRanges, describeRange, DIRECT_PASS_MS } from '../src/silence-schedule.js';
 import * as roleRefreshLib from '../src/role-refresh.js';
+import * as stickerDescribeLib from '../src/sticker-describe.js';
+import * as webImageLib from '../src/web-image.js';
+import * as tokenGuardLib from '../src/agent-token-guard.js';
+import * as promptBlocksLib from '../src/prompt-blocks.js';
+import * as autoCompactLib from '../src/auto-compact.js';
+import * as defaultRolesLib from '../src/default-roles.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
 import * as presetPrompt from '../src/preset-prompt.js';
@@ -155,6 +161,11 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ownerTranscript, pendingHandover, reconcileSessionPolicies, recordOwnerTranscript, recordSentMessagesV2,
     scheduler, scheduledNotes, handleRemindCommand, silence, scheduledSilenceFor, silenceTick, shouldBlockSilentReply,
     roleRefresh, currentRoleFingerprintV2, roleRefreshBlockV2, refreshRoleNowV2, currentRoleHintV2,
+    stickerDescribeJob, learnerWaiters, stickerDescribeBlocker,
+    tokenMiss, rotateAgentTokenV2, promptBlocks, stickerBlockTextV2, slangBlockText,
+    sessionLastInput, maybeAutoCompact, compactConversation, compactAttemptAt, recordSessionUsage, noteSendLimitedV2, sendLimitSummaryV2,
+    getStickerDescriberSessionId() { return stickerDescriberSessionId; },
+    getStickerEntries() { return stickerEntries; },
     emojiCdnCandidates, getImageDimensions, acceptImageBuffer, MAX_MEDIA_BYTES, bot,
     isConversationBusyV2, v2TurnStartAt, turnLeaseNoted, TURN_BUSY_LEASE_MS,
     settingFromDshNamespace, selfIdentityTextV2, buildWakeReminderPromptV2,
@@ -193,7 +204,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker, ...stickerLimits,
     ...modelPrices, ...dshModel, ...quoteForward, ...modeHandover, ...roleCard, ...tokenLedger,
-    createScheduler, parseRemindCommand, REMIND_HELP, formatTaskList, createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt, describeInstant, createSilenceSchedule, peakPresetRanges, describeRange, ...roleRefreshLib, ...voiceLib, ...stateAcl, ...presetPrompt, ...bridgeExt,
+    createScheduler, parseRemindCommand, REMIND_HELP, formatTaskList, createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt, describeInstant, createSilenceSchedule, peakPresetRanges, describeRange, DIRECT_PASS_MS, ...roleRefreshLib, ...stickerDescribeLib, ...webImageLib, ...tokenGuardLib, ...promptBlocksLib, ...autoCompactLib, ...defaultRolesLib, ...voiceLib, ...stateAcl, ...presetPrompt, ...bridgeExt,
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事（同理见下面的
     // cleanupTemp / processAudioVolume 桩）。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),

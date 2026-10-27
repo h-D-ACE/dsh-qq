@@ -4,7 +4,8 @@
 //   ② 桥接：静默时群消息记下但不唤醒、各种唤醒都不发（真正不花 token）、管理员私聊默认不受影响、发送被拦；
 //      定时任务「叫 AI 来说」跳过 / 设了「照常执行」就放行、固定文字照发、预览标出会跳过的那几次；
 //      手动「恢复正常」= 这一段临时恢复；结束时给被直接找过的会话补一次唤醒；控制台接口拒绝 agent token；
-//   ③ 控制台：静默开关卡片里的定时静默面板与任务表单选项。
+//   ③ 控制台：静默开关卡片里的定时静默面板与任务表单选项；
+//   ④ 「只在被 @ 或私聊时唤醒」档位：没人找时照样不唤醒；被 @ 后这个群放行一段时间（能唤醒、能发），别的群照样静默。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import {
-  normalizeSilenceConfig, activeWindow, upcomingWindows, peakPresetRanges, describeRange, rangeAppliesOnDay, createSilenceSchedule,
+  normalizeSilenceConfig, activeWindow, upcomingWindows, peakPresetRanges, describeRange, rangeAppliesOnDay, createSilenceSchedule, wakeTierOf, DIRECT_PASS_MS,
 } from '../src/silence-schedule.js';
 import { resolvePriceTable } from '../src/model-prices.js';
 import { zonedParts } from '../src/scheduler/time.js';
@@ -185,8 +186,59 @@ test('③ 控制台：静默开关卡片里有定时静默面板；任务表单�
   const html = fs.readFileSync(new URL('../public/console.html', import.meta.url), 'utf8');
   const sec = html.slice(html.indexOf('<section id="section-silent"'), html.indexOf('</section>', html.indexOf('<section id="section-silent"')));
   for (const id of ['silentOn', 'silentOff', 'silenceStatePill', 'silenceEnabled', 'silenceTz', 'silenceRanges', 'silenceAdd', 'silencePeak', 'silenceSave', 'silenceUpcoming']) assert.ok(sec.includes(`id="${id}"`), id);
-  for (const opt of ['stopWakes', 'recordMessages', 'catchUpOnEnd', 'pauseAiTasks', 'includeOwnerPrivate']) assert.ok(sec.includes(`data-silence-opt="${opt}"`), opt);
+  for (const opt of ['recordMessages', 'catchUpOnEnd', 'pauseAiTasks', 'includeOwnerPrivate']) assert.ok(sec.includes(`data-silence-opt="${opt}"`), opt);
+  for (const tier of ['stop', 'direct', 'normal']) assert.ok(sec.includes(`name="silenceWakeTier" value="${tier}"`), `唤醒档位 ${tier}`);
+  assert.match(sec, /只在被 @ 或私聊时唤醒/);
   assert.match(html, /<option value="skip">定时静默时段内：跳过这次<\/option><option value="run">定时静默时段内：照常执行<\/option>/);
   assert.match(html, /定时任务免打扰（只拦定时任务发往群的消息/, '定时任务那边改名为「定时任务免打扰」');
   assert.ok(!/#section-silent \.row \{\s*grid-column:2/.test(html), '静默卡片不再把每一行钉在第 2 栏');
+});
+
+test('④ 「只在被 @ 或私聊时唤醒」档位', async () => {
+  assert.equal(normalizeSilenceConfig({}).options.directWakes, false, '默认仍是全停');
+  assert.equal(wakeTierOf(normalizeSilenceConfig({}).options), 'stop');
+  assert.equal(wakeTierOf({ stopWakes: true, directWakes: true }), 'direct');
+  assert.equal(wakeTierOf({ stopWakes: false, directWakes: true }), 'normal');
+  assert.ok(DIRECT_PASS_MS >= 60_000);
+
+  const h = await bridgeHarness({ config: { admin: { consoleEscalationCooldownMs: 0 } } });
+  const server = h.startConsoleServer();
+  try {
+    await h.initControllerOnce('reserved2');
+    h.setMode('reserved2');
+    h.scheduler.updateSettings({ limits: { quietEnabled: false } }, { source: 'console' });
+    const port = await listen(server);
+    await h.ensureSession('group:456');
+    const saved = await req(port, '/api/silence', 'POST', {}, { enabled: true, timezone: BJ, ranges: [rangeAroundNow()], options: { stopWakes: true, directWakes: true } });
+    assert.equal(saved.status, 200, JSON.stringify(saved.json));
+    assert.equal(saved.json.config.options.directWakes, true);
+
+    // 没人找：主动冒泡、睡醒照样不唤醒，发送照样拦
+    const prompts0 = h.calls.prompts.length;
+    await h.sendWakePromptV2('group:456', 'proactiveCheck');
+    await h.sendWakePromptV2('group:456', 'timeout');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(h.calls.prompts.length, prompts0, '没人找时不唤醒');
+    assert.equal(h.shouldBlockSilentReply('group:456'), true);
+
+    assert.ok(!h.getSocialV2State('group:456').pendingWakeReason, '静默中没有排队的唤醒');
+    // 群友没 @ 的普通消息：照样只记不唤醒
+    const plain = { ...groupAt('今天好热'), message: [{ type: 'text', data: { text: '今天好热' } }] };
+    await h.handleIncoming('group', 456, plain, h.cfg);
+    assert.ok(h.scheduledSilenceFor('group:456'), '普通消息不放行');
+
+    // 被 @：这个群放行，能唤醒、能发
+    await h.handleIncoming('group', 456, groupAt('鲸鱼在吗'), h.cfg);
+    assert.equal(h.scheduledSilenceFor('group:456'), null, '被 @ 后这个群放行');
+    assert.equal(h.shouldBlockSilentReply('group:456'), false, '放行期间能发');
+    assert.ok(!h.getSocialV2State('group:456').silenceMissedDirect, '已经当场处理，结束时不用再补');
+    assert.ok(h.getSocialV2State('group:456').unread.some((m) => /鲸鱼在吗/.test(m.text)), '消息走了正常流程');
+    assert.ok(h.getSocialV2State('group:456').pendingWakeReason, '被 @ 后排上了唤醒（合并窗口几秒后发出）');
+    assert.ok(h.scheduledSilenceFor('group:789'), '别的群照样静默');
+  } finally {
+    h.scheduler.stop();
+    h.ext.controller.stop();
+    await new Promise((r) => server.close(r));
+    await h.close();
+  }
 });

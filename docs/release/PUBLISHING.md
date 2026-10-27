@@ -6,7 +6,7 @@
 
 ```powershell
 npm ci
-npm run test:audit                 # Windows 上应全部通过；macOS / Linux 上 test-console-encoding.mjs 是已知失败（只适用于 Windows），v1.1.0 为 62/63
+npm run test:audit                 # Windows 上应全部通过；macOS / Linux 上 test-console-encoding.mjs 是已知失败（只适用于 Windows），v1.1.1 为 69/70
 npm run privacy-scan               # 上游的隐私扫描：不应出现真实 QQ 号、本机路径、令牌
 git status --short                 # 确认没有 config.json / state/ / node_modules / audio/ 被跟踪
 ```
@@ -19,8 +19,8 @@ git status --short                 # 确认没有 config.json / state/ / node_mo
 ```powershell
 git remote add origin https://github.com/h-D-ACE/dsh-qq.git   # 已经设置过 origin 就跳过这一行
 git push -u origin main
-git tag -a v1.1.0 -m "qq-bridge-enhanced v1.1.0"
-git push origin v1.1.0
+git tag -a v1.1.1 -m "qq-bridge-enhanced v1.1.1"
+git push origin v1.1.1
 ```
 
 > 不要向上游 `Derpyu520/qq-bridge` 推送；如需回馈上游，请在你的仓库里另开分支，通过 Pull Request 提交。
@@ -46,8 +46,8 @@ npm run release:zip
 或用 GitHub CLI：
 
 ```powershell
-gh release create v1.1.0 ../release/qq-bridge-enhanced-v1.1.0.zip ../release/qq-bridge-enhanced-v1.1.0.zip.sha256 `
-  --repo h-D-ACE/dsh-qq --title "qq-bridge-enhanced v1.1.0" --notes-file docs/release/RELEASE_NOTES_v1.1.0.md
+gh release create v1.1.1 ../release/qq-bridge-enhanced-v1.1.1.zip ../release/qq-bridge-enhanced-v1.1.1.zip.sha256 `
+  --repo h-D-ACE/dsh-qq --title "qq-bridge-enhanced v1.1.1" --notes-file docs/release/RELEASE_NOTES_v1.1.1.md
 ```
 
 **不要**把 SnowLuma 的安装包、`node_modules`、你的 `config.json` 或 `state/` 作为 Release 附件上传。

@@ -76,7 +76,7 @@ if (bad.length) {
   console.error(`❌ 打包清单里有不应发布的文件（请从 git 里移除或加入 .gitignore）：\n  ${bad.join('\n  ')}`);
   process.exit(1);
 }
-for (const must of ['package.json', 'package-lock.json', 'src/bridge.js', 'config.example.json', 'README.md', 'LICENSE', 'NOTICE.md', 'CHANGELOG.md', 'docs/DSH_DEPLOYMENT.md', 'start.bat', 'scripts/setup-dsh.mjs', 'scripts/test-audit.mjs', 'control-center-hidden.vbs', 'scripts/build-mac-app.mjs', 'interface-platform/package.json', 'interface-platform/src/index.mjs']) {
+for (const must of ['package.json', 'package-lock.json', 'src/bridge.js', 'config.example.json', 'README.md', 'LICENSE', 'NOTICE.md', 'CHANGELOG.md', 'docs/DSH_DEPLOYMENT.md', 'start.bat', 'scripts/setup-dsh.mjs', 'scripts/test-audit.mjs', 'control-center-hidden.vbs', 'scripts/build-mac-app.mjs', 'interface-platform/package.json', 'interface-platform/src/index.mjs', 'assets/default-roles/小鲸鱼.md']) {
   if (!files.includes(must)) { console.error(`❌ 打包清单缺少必需文件：${must}`); process.exit(1); }
 }
 

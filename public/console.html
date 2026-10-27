@@ -2069,6 +2069,16 @@ button:active:not(:disabled) {
         </div>
       </details>
 
+      <details class="settings-group">
+        <summary>恢复默认人格</summary>
+        <div class="settings-content">
+          <div class="meta">把发布包自带的原版角色卡放回来：误删了、或者改乱了想重来时用。改过的那份会先备份到 <code>state/role-backups/</code>，不会直接丢掉。</div>
+          <div id="roleDefaultsList" class="role-defaults" style="margin-top:8px">加载中…</div>
+          <div class="meta">恢复的是当前启用的人格时，按上面「保存当前启用的人格后」选的方式让各会话读到原版。恢复不会自动切换人格；被删掉的人格恢复后，需要的话在「切换当前启用的人格」里选它。</div>
+          <div class="meta" id="roleDefaultsMsg"></div>
+        </div>
+      </details>
+
       <h3 class="layer-heading">仿真提示词（预设内置）<span class="meta" id="simPromptStatus">加载中…</span></h3>
       <div class="row" style="margin-bottom:8px">
         <label style="flex:0 0 auto">仿真代次</label>
@@ -2248,6 +2258,7 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="stickerNote"> <span><b>qq_sticker_note</b><span class="meta">给表情记录本地含义/标签/用法</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setStickerRemark"> <span><b>qq_set_sticker_remark</b><span class="meta">修改 QQ 官方表情备注（默认禁用，慎用）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendVoice"> <span><b>qq_send_voice / qq_list_voices</b><span class="meta">发送语音条（只能发语音库里的音频；偶然而为的强表达）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="webImage"> <span><b>qq_search_images / qq_preview_image / qq_send_web_image</b><span class="meta">搜图并发送（默认关）：只在管理员私聊里用，「找一张 xxx 的图发我」；必须先看图再发，搜索词会发给 Bing；改后重启 DSH 才会出现在工具列表</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="schedule"> <span><b>qq_schedule_create / list / update / delete</b><span class="meta">定时任务：只在管理员私聊里能用，AI 替你登记提醒、到点由桥接执行；默认只能发给你，登记后桥接另发确认（详见「定时任务」页面）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="handoverMemory"> <span><b>切到 agent 时带上私聊长期记忆</b><span class="meta">不是工具：切到 agent L1～L3 时，把二代仿真里 AI 在管理员私聊记下的话题、想说的话、印象一并交接给 agent（只取管理员私聊的，不含任何群；已脱敏）。关掉后只交接最近的私聊往来</span></span></label>
       </div>
@@ -2405,6 +2416,12 @@ button:active:not(:disabled) {
         <label style="flex:1">收藏备注最大字数</label><input type="number" id="v2StickerCollectRemarkMax" min="1" max="50" style="width:80px">
         <span class="meta" style="flex:2">AI 收藏别人表情时写的简短备注长度上限。</span>
       </div>
+      <div class="row" style="margin-top:12px;align-items:center;gap:12px;flex-wrap:wrap">
+        <button id="stickerDescribeBtn" type="button">让 AI 看图补表情说明</button>
+        <span class="meta" id="stickerDescribeStatus">加载中…</span>
+      </div>
+      <div class="meta">没有说明的表情，AI 不知道图里是什么，平时就很少用。点一下：桥接用一个不挂本地工具的专用会话，逐批把图发给当前模型看（每次最多 20 张，需要能看图的模型），
+        写下「是什么 / 标签 / 什么时候用」存进本地表情库（不改 QQ 账号里的官方备注）。偏凶或带粗口的表情会打上「偏凶 / 粗口」标签并标「慎用」。每张图都会花一点 token。</div>
 
       </div></details>
 <details class="settings-group"><summary>上下文参数（recent / unread / contextWindow）</summary><div class="settings-content">
@@ -2739,6 +2756,18 @@ button:active:not(:disabled) {
         <span class="meta">保存后立即生效并写入 config.json</span>
       </div>
     </section>
+<section id="section-sendlimit" data-page="overview" class="card span-all">
+      <h2 data-note="保存后立即生效">发言上限</h2>
+      <div class="meta">二代仿真里每个群 / 私聊 AI 最多能发多少条，防止刷屏和账号风控。超过上限时 AI 这次的话不会发出去（表现为「AI 不说话了」）；填 0 表示不限。</div>
+      <div class="row" style="margin-top:10px">
+        <label style="flex:0 0 auto">每分钟最多</label><input type="number" id="sendLimitMin" min="0" max="999" style="width:80px"><span class="meta" style="margin:0">条</span>
+        <label style="flex:0 0 auto;margin-left:16px">每小时最多</label><input type="number" id="sendLimitHour" min="0" max="9999" style="width:80px"><span class="meta" style="margin:0">条</span>
+      </div>
+      <div class="row" style="margin-top:10px;justify-content:space-between">
+        <span class="meta" style="margin:0" id="sendLimitHits">最近 24 小时没有被拦过</span>
+        <div class="row"><span class="meta" style="margin:0" id="sendLimitMsg"></span><button id="sendLimitSave">保存发言上限</button></div>
+      </div>
+    </section>
 <section id="section-silent" data-page="overview" class="card span-all">
       <div class="row" style="justify-content:space-between">
         <h2 style="margin:0">静默开关</h2>
@@ -2767,7 +2796,10 @@ button:active:not(:disabled) {
         </div>
         <div class="silence-options">
           <div style="font-weight:500">静默期间</div>
-          <label class="sched-chip silence-opt"><input type="checkbox" data-silence-opt="stopWakes"> 停止 AI 的一切唤醒（被 @、主动冒泡、睡醒、回复检查）——真正不花 token<span class="meta">原来的手动静默只拦发送，AI 仍会被定时唤醒去思考；定时静默会连唤醒一起停</span></label>
+          <div class="meta" style="margin:4px 0 0">AI 的唤醒</div>
+          <label class="sched-chip silence-opt"><input type="radio" name="silenceWakeTier" value="stop"> 全部停止（被 @、主动冒泡、睡醒、回复检查都不唤醒）——最省 token<span class="meta">原来的手动静默只拦发送，AI 仍会被定时唤醒去思考；这一档连唤醒一起停</span></label>
+          <label class="sched-chip silence-opt"><input type="radio" name="silenceWakeTier" value="direct"> 只在被 @ 或私聊时唤醒<span class="meta">有人 @ AI、引用回复 AI 或私聊 AI 时，这个群 / 私聊照常放行 10 分钟（能接着聊几句）；主动冒泡、睡醒等其余唤醒照样停，大头的花费照样省下</span></label>
+          <label class="sched-chip silence-opt"><input type="radio" name="silenceWakeTier" value="normal"> 照常唤醒，只拦往外发<span class="meta">AI 照样思考、照样花钱，只是说的话不发出去</span></label>
           <label class="sched-chip silence-opt"><input type="checkbox" data-silence-opt="recordMessages"> 群消息照样记下（不唤醒 AI），恢复后 AI 能补看这段时间说了什么</label>
           <label class="sched-chip silence-opt"><input type="checkbox" data-silence-opt="catchUpOnEnd"> 静默期间有人 @ / 叫名字 / 提问 / 拍一拍 AI，结束时补一次唤醒</label>
           <label class="sched-chip silence-opt"><input type="checkbox" data-silence-opt="pauseAiTasks"> 定时任务里「叫 AI 来说」的也暂停（任务里可以单独设「照常执行」）；固定文字照发</label>
@@ -2939,6 +2971,20 @@ button:active:not(:disabled) {
       <div id="usagePrices" class="meta">读取中…</div>
       </div></details>
     </section>
+<section id="section-compact" data-page="usage" class="card span-all">
+      <h2 data-note="保存后下一轮结束时生效">上下文压缩</h2>
+      <div class="meta">QQ 会话一直不重建，历史越攒越长；每一步模型都要把整段历史重读一遍，读得越多越贵。压缩会把较早的历史换成一段摘要，最近约 15 万 token 原样保留；人际关系、群档案、黑话表、表情说明都存在桥接自己这边，不受影响。</div>
+      <div style="margin-top:10px">
+        <label class="sched-chip" style="margin:0"><input type="radio" name="compactMode" value="early"> 提前压缩：上一步读到 <input type="number" id="compactWan" min="5" max="80" step="1" style="width:70px" aria-label="压缩阈值（万 token）"> 万 token 时压缩</label>
+        <div class="meta" style="margin:2px 0 8px 26px">默认 30 万。数字越小越省钱，很早以前的聊天细节也越早变成摘要；可以填 5～80。每个会话两次自动压缩至少隔 2 小时，会话正忙时不压，等它空下来。</div>
+        <label class="sched-chip" style="margin:0"><input type="radio" name="compactMode" value="dsh"> 交给 DSH 自己压缩（约 80 万 token 时）</label>
+        <div class="meta" style="margin:2px 0 0 26px">deepseek-flash 的上下文窗口是 100 万，DSH 在窗口的 80% 左右自己压缩；保留细节最多，但每一步读得最多、最贵。</div>
+      </div>
+      <div class="row" style="margin-top:10px;justify-content:space-between">
+        <span class="meta" style="margin:0" id="compactSessions">—</span>
+        <div class="row"><span class="meta" style="margin:0" id="compactMsg"></span><button id="compactSave">保存压缩设置</button></div>
+      </div>
+    </section>
       </div>
       <div class="overview-footnote" data-page="overview"><span id="accessSummary">正在读取访问范围…</span><button class="text-button" data-view="access">管理访问范围 →</button></div>
       <footer class="page-footer"><span>QQ Bridge · 连接日常，保持自主</span><span id="lastUpdated">等待首次同步</span></footer>
@@ -3003,6 +3049,33 @@ async function api(path, method, body, _retried = 0) {
   }
   return res.json();
 }
+// ── 一键补表情说明 ─────────────────────────────────────────────
+let stickerDescribeTimer = null;
+function renderStickerDescribe(r) {
+  const el = document.getElementById('stickerDescribeStatus');
+  const btn = document.getElementById('stickerDescribeBtn');
+  if (!el || !r || !r.ok) { if (el) el.textContent = (r && r.error) || '读取失败'; return; }
+  let text = `共 ${r.total} 张收藏表情，其中 ${r.undescribed} 张没有说明`;
+  if (r.running) text = `⏳ 正在看图补说明：${r.progress.done}/${r.progress.total}…`;
+  else if (r.last) text = (r.last.ok ? '✅ ' : '⚠️ ') + r.last.text;
+  if (!r.running && r.blocker && r.undescribed) text += `（现在不能运行：${r.blocker}）`;
+  el.textContent = text;
+  btn.disabled = !!r.running || !r.undescribed || !!r.blocker;
+  btn.textContent = r.undescribed ? `让 AI 看图补表情说明（${Math.min(r.undescribed, r.max)} 张）` : '所有表情都有说明了';
+  clearTimeout(stickerDescribeTimer);
+  if (r.running) stickerDescribeTimer = setTimeout(refreshStickerDescribe, 2500);
+}
+async function refreshStickerDescribe() {
+  try { renderStickerDescribe(await api('/api/stickers/describe')); } catch {}
+}
+document.addEventListener('click', async (e) => {
+  if (!e.target || e.target.id !== 'stickerDescribeBtn') return;
+  const r = await api('/api/stickers/describe', 'POST', {});
+  if (!r.ok) { alert(r.error || '启动失败'); refreshStickerDescribe(); return; }
+  renderStickerDescribe(r);
+});
+setTimeout(refreshStickerDescribe, 800);
+
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 // 上游静默时长的人话渲染：只用于 SnowLuma 健康提示（秒 / 分钟 / 小时）。
 function fmtAgoMs(ms) {
@@ -3070,6 +3143,7 @@ async function refresh() {
     const levelSel = document.getElementById('closedLevel');
     if (levelSel && s.mode === 'closed-agent' && s.level && document.activeElement !== levelSel) levelSel.value = s.level;
     document.getElementById('activity').textContent = s.activity || '（空）';
+    renderSendLimitHits(s.sendLimit);
     const presetSel = document.getElementById('closedPreset');
     if (presetSel && document.activeElement !== presetSel) presetSel.value = s.closedAgentPreset || '';
   } catch (e) { document.getElementById('statusText').textContent = '连接中断 · 请检查桥接服务'; setConnectionError(e); }
@@ -3185,7 +3259,46 @@ function resetRoleForm() {
   setRoleMsg('');
 }
 
+async function refreshRoleDefaults() {
+  const box = document.getElementById('roleDefaultsList');
+  if (!box) return;
+  const r = await api('/api/roles/defaults');
+  if (!r.ok) { box.textContent = '❌ ' + (r.error || '读取失败'); return; }
+  box.replaceChildren();
+  if (!(r.defaults || []).length) { box.textContent = '发布包里没有找到默认人格（assets/default-roles/）'; return; }
+  for (const d of r.defaults) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.marginTop = '4px';
+    const state = !d.exists ? '已被删除' : (d.modified ? '改过' : '和原版一样');
+    row.innerHTML = `<span style="flex:0 0 auto"><b>${esc(d.name)}</b>${d.name === r.current ? '（当前启用）' : ''}</span><span class="pill ${!d.exists ? 'r' : (d.modified ? 'b' : 'g')}">${state}</span>`;
+    const btn = document.createElement('button');
+    btn.className = 'small';
+    btn.textContent = d.exists ? '恢复成原版' : '重新放回';
+    btn.dataset.roleRestore = d.name;
+    btn.disabled = d.exists && !d.modified;
+    btn.addEventListener('click', async () => {
+      if (d.exists && !confirm(`把「${d.name}」恢复成原版？你改过的那份会先备份到 state/role-backups/。`)) return;
+      const apply = (document.querySelector('input[name="roleSaveApply"]:checked') || {}).value || 'nextWake';
+      const x = await api('/api/roles/restore-default', 'POST', { name: d.name, apply });
+      const msg = document.getElementById('roleDefaultsMsg');
+      msg.className = x.ok ? 'meta ok' : 'meta err';
+      msg.textContent = !x.ok ? '❌ ' + (x.error || '恢复失败')
+        : x.unchanged ? `「${d.name}」本来就是原版`
+        : `✅ 已恢复「${d.name}」` + (x.backup ? `（改过的那份备份为 state/role-backups/${x.backup}）` : '（原来被删了，已重新放回）') + roleSaveRefreshText(x.refresh);
+      if (x.ok && roleEditorState.mode === 'edit' && roleEditorState.name === d.name) {
+        const c = await api('/api/roles/content?name=' + encodeURIComponent(d.name));
+        if (c.ok) { document.getElementById('newRoleContent').value = c.content; updateRoleEditorWarnings(); }
+      }
+      refreshRoles();
+    });
+    row.appendChild(btn);
+    box.appendChild(row);
+  }
+}
+
 async function refreshRoles() {
+  refreshRoleDefaults().catch(() => {});
   try {
     const r = await api('/api/roles');
     if (r.limits?.injectMaxChars) {
@@ -5943,6 +6056,8 @@ function renderSilence() {
   silEl('silenceEnabled').checked = !!r.config.enabled;
   schedSetTz(silEl('silenceTz'), r.config.timezone);
   document.querySelectorAll('[data-silence-opt]').forEach((c) => { c.checked = !!r.config.options[c.dataset.silenceOpt]; });
+  const tier = r.config.options.stopWakes === false ? 'normal' : (r.config.options.directWakes ? 'direct' : 'stop');
+  document.querySelectorAll('input[name="silenceWakeTier"]').forEach((c) => { c.checked = c.value === tier; });
   renderSilenceRanges();
   const pill = silEl('silenceStatePill');
   if (r.manual) { pill.textContent = '静默中 · 手动'; pill.className = 'pill r'; }
@@ -5985,12 +6100,66 @@ silEl('silencePeak').addEventListener('click', () => {
 silEl('silenceSave').addEventListener('click', async () => {
   const options = {};
   document.querySelectorAll('[data-silence-opt]').forEach((c) => { options[c.dataset.silenceOpt] = c.checked; });
+  const tier = document.querySelector('input[name="silenceWakeTier"]:checked')?.value || 'stop';
+  options.stopWakes = tier !== 'normal';
+  options.directWakes = tier === 'direct';
   const r = await api('/api/silence', 'POST', { enabled: silEl('silenceEnabled').checked, timezone: silEl('silenceTz').value, ranges: readSilenceRows(), options });
   silEl('silenceMsg').textContent = r.ok ? '✅ 已保存' : '❌ ' + (r.error || '保存失败');
   silEl('silenceMsg').className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) { silenceState = r; silenceDraft = r.config.ranges.map((x) => ({ ...x })); renderSilence(); }
 });
 setInterval(() => { if (currentConsolePage === 'overview') refreshSilence(); }, 60_000);
+// ── 发言上限（二代 socialV2.send.maxSendPerMinute / maxSendPerHour）────────────
+async function loadSendLimit() {
+  const r = await api('/api/socialV2/config');
+  const send = (r && (r.config || r).send) || {};
+  for (const [id, k, d] of [['sendLimitMin', 'maxSendPerMinute', 8], ['sendLimitHour', 'maxSendPerHour', 60]]) {
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el) el.value = send[k] ?? d;
+  }
+}
+function renderSendLimitHits(x) {
+  const el = document.getElementById('sendLimitHits');
+  if (!el) return;
+  if (!x) { el.textContent = '最近 24 小时没有被拦过'; el.className = 'meta'; return; }
+  el.textContent = `⚠️ 最近 24 小时被拦了 ${x.count} 次（${x.keys} 个会话；最近一次 ${new Date(x.lastAt).toLocaleTimeString()}，${x.lastKey}）。AI 经常一次发好几条的话，可以把上限调高一点`;
+  el.className = 'meta err';
+}
+document.getElementById('sendLimitSave').addEventListener('click', async () => {
+  const send = { maxSendPerMinute: Math.max(0, Math.round(Number(document.getElementById('sendLimitMin').value) || 0)), maxSendPerHour: Math.max(0, Math.round(Number(document.getElementById('sendLimitHour').value) || 0)) };
+  const r = await api('/api/socialV2/config', 'POST', { send });
+  const msg = document.getElementById('sendLimitMsg');
+  msg.textContent = r.ok === false ? '❌ ' + (r.error || '保存失败') : '✅ 已保存';
+  msg.className = r.ok === false ? 'meta err' : 'meta ok';
+  if (r.ok !== false && typeof loadV2Config === 'function') loadV2Config(); // 二代仿真页「发送限制」里的同一组数字跟着刷新
+});
+loadSendLimit();
+
+// ── 上下文压缩（socialV2.compact）───────────────────────────────────────────
+async function loadCompactConfig() {
+  const r = await api('/api/compact/config');
+  if (!r.ok) return;
+  document.querySelectorAll('input[name="compactMode"]').forEach((c) => { c.checked = c.value === r.mode; });
+  const wan = document.getElementById('compactWan');
+  if (document.activeElement !== wan) wan.value = Math.round(r.thresholdTokens / 10_000);
+  const list = (r.sessions || []).sort((a, b) => b.inputTokens - a.inputTokens).slice(0, 6);
+  document.getElementById('compactSessions').textContent = list.length
+    ? '上一步读了多少：' + list.map((x) => `${x.key} ${Math.round(x.inputTokens / 10_000)} 万`).join('，')
+    : '桥接这次启动后还没有会话跑过，暂时看不到每个会话读了多少';
+}
+document.getElementById('compactSave').addEventListener('click', async () => {
+  const mode = (document.querySelector('input[name="compactMode"]:checked') || {}).value;
+  const msg = document.getElementById('compactMsg');
+  if (!mode) { msg.textContent = '请先选一种压缩方式'; msg.className = 'meta err'; return; }
+  const r = await api('/api/compact/config', 'POST', { mode, thresholdWan: Number(document.getElementById('compactWan').value) });
+  msg.textContent = r.ok ? '✅ 已保存' : '❌ ' + (r.error || '保存失败');
+  msg.className = r.ok ? 'meta ok' : 'meta err';
+  if (r.ok) loadCompactConfig();
+});
+document.getElementById('compactWan').addEventListener('focus', () => { const e = document.querySelector('input[name="compactMode"][value="early"]'); if (e) e.checked = true; });
+loadCompactConfig();
+setInterval(() => { if (currentConsolePage === 'usage') loadCompactConfig(); }, 60_000);
+
 
 refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshSilence(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();
 setInterval(() => { refresh(); refreshSessions(); refreshPending(); refreshSocialStatus(); refreshSlang(); }, 3000);

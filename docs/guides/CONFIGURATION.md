@@ -69,7 +69,20 @@ TOTP 秘密**不在** `config.json` 里：用 `npm run admin:totp-setup` 写入 
 | `requestMode` | `qq_request_mode_change` | 只在 owner 私聊会话里登记申请；不能执行、不能确认 |
 | `crossGroup` | `qq_cross_group_query` | 还需要 `crossGroup.enabled` 与链接授权 |
 | `schedule`（v1.1.0） | `qq_schedule_create / list / update / delete` | AI 在管理员私聊里登记定时任务（定时任务的总开关在控制台「定时任务」页面，和这个工具开关是两回事）。见 [SCHEDULER.md](SCHEDULER.md) |
+| `webImage`（v1.1.1，**默认 `false`**） | `qq_search_images` / `qq_preview_image` / `qq_send_web_image` | 管理员私聊里搜图并发送：只能发搜到且看过的候选，图片由桥接安全下载；搜索词会发给 Bing。必须显式设为 `true`，改后重启 DSH |
 | `handoverMemory`（v1.1.0） | —（不是工具） | 切到 agent 时，把二代仿真里 AI 在管理员私聊记下的长期记忆（最多 1500 字，只取管理员私聊）一起交接；`false` = 只交接最近的私聊往来 |
+
+## `socialV2.compact` —— 会话太长时自动压缩（v1.1.1）
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 桥接提前压缩的总开关；`false` = 交给 DSH 自己压缩（deepseek-flash 窗口 100 万，DSH 约 80 万时压） |
+| `thresholdTokens` | `300000` | 某个二代会话最近一步读的 token 超过它，就在这一轮结束、会话空闲后执行一次 DSH 的 `/compact`（范围 5 万～80 万；再往上 DSH 自己会先压） |
+| `cooldownMinutes` | `120` | 同一个会话两次自动压缩的最小间隔（失败也算） |
+
+控制台「令牌与花费 → 上下文压缩」可以直接改：选「提前压缩」并填几万 token（5～80），或选「交给 DSH 自己压缩」；卡片里还列出每个会话上一步读了多少。
+
+压缩只把较早的历史换成摘要，桥接自己的记忆（群规则、话题、印象）不受影响；压缩后下一次唤醒会重新完整给黑话表、表情块和角色卡。
 
 ## 定时任务与定时静默（v1.1.0）
 
@@ -167,4 +180,7 @@ AI **收藏**群友的表情、**发送**收藏表情时，桥接会先自己下
 | `state/admin/owner-transcript.json` | （v1.0.3）owner 私聊往来记录，切换模式时交接用；脱敏、限长，0600 |
 | `state/scheduler.json` | （v1.1.0）定时任务：总开关、默认时区、安全限制、任务列表、执行记录；0600 |
 | `state/silence-schedule.json` | （v1.1.0）定时静默：时间段、时区、静默期间的行为选项；0600 |
+| `state/sticker-describe-session.json` | （v1.1.1）一键补表情说明用的专用看图会话 ID 与 preset；删掉会在下次使用时重建 |
+| `state/prompt-blocks.json` | （v1.1.1）各会话上次完整拿到的黑话表 / 表情块指纹（只存指纹）；删掉只会让下一次唤醒重新完整给 |
+| `state/role-backups/` | （v1.1.1）「恢复默认人格」时，改过的那份角色卡先备份到这里（每个人格最多 10 份，0600）；可以随时删 |
 | `state/role-seen.json` | （v1.1.0）每个会话读到的角色卡版本（只存会话 ID 与指纹，不存内容）；删掉只会让各会话下一次唤醒再收到一次当前角色卡；0600 |

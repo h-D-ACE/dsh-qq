@@ -293,7 +293,7 @@ async function legacyReadToolAllowed() {
   return String(status?.mode ?? '') === 'closed-agent';
 }
 
-const server = new McpServer({ name: 'snowluma-safe', version: '1.1.0' });
+const server = new McpServer({ name: 'snowluma-safe', version: '1.1.1' });
 
 // ── 工具开关必须在**注册期**生效，而不是只在校验期 ──────────────────────────
 //
@@ -355,6 +355,9 @@ const TOOL_CONFIG_FLAGS = {
   qq_cross_group_query: 'crossGroup',
   // v0.4.2（默认关闭；下方注册处另有 === true 判断）
   qq_ask_group_session: 'ownerRelay',
+  qq_search_images: 'webImage',
+  qq_preview_image: 'webImage',
+  qq_send_web_image: 'webImage',
   // 管理员私聊跨群只读 + 群长期规则（默认关闭；下方注册处另有 === true 判断）
   qq_owner_peek_group: 'ownerGroupAccess',
   qq_owner_group_rule: 'ownerGroupAccess',
@@ -1251,6 +1254,75 @@ if (cfg.socialV2?.tools?.getSelfImage !== false) {
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `获取形象图片失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+// 搜图并发送（管理员私聊专用，默认关闭；必须 socialV2.tools.webImage === true 才注册）。
+// 三步走：搜索只拿到「编号 + 标题 + 来源网站」，看过（预览）的才能发；网址和下载都在桥接里，AI 填不了任意网址或路径。
+if (cfg.socialV2?.tools?.webImage === true) {
+  server.tool(
+    'qq_search_images',
+    '在网上搜图（只在管理员私聊里可用）：管理员让你「找一张 xxx 的图发我」时用。返回编号、标题和来源网站，不返回网址。之后先 qq_preview_image 看图确认，再 qq_send_web_image 发。搜索词会发给 Bing（严格安全搜索）；每小时有次数上限。',
+    {
+      key: z.string().describe('会话 key（只能是管理员私聊 private:QQ号）'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      query: z.string().describe('搜索词，最多 50 字，例如「柯基 可爱」')
+    },
+    async ({ key, token, query }) => {
+      try {
+        const q = new URLSearchParams({ key, query: String(query) });
+        const data = await agentApi(`/api/socialV2/image-search?${q.toString()}`, { headers: { 'x-agent-token': token }, timeoutMs: 45000 });
+        return { content: [{ type: 'text', text: data.text }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `搜图失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+  server.tool(
+    'qq_preview_image',
+    '看一眼 qq_search_images 搜到的某张候选图（缩略图会进入你的视觉上下文）。发之前必须先看：确认内容和管理员要的一致、没有不适宜的内容；不对就换一张或换个词重搜。',
+    {
+      key: z.string().describe('会话 key（管理员私聊）'),
+      token: z.string().describe('会话令牌'),
+      n: z.number().int().describe('候选编号（qq_search_images 返回的数字）')
+    },
+    async ({ key, token, n }) => {
+      try {
+        const q = new URLSearchParams({ key, n: String(n) });
+        const data = await agentApi(`/api/socialV2/image-preview?${q.toString()}`, { headers: { 'x-agent-token': token }, timeoutMs: 45000 });
+        if (!data?.image?.data) return { content: [{ type: 'text', text: `预览失败：${errorText(data?.error, '未知')}` }], isError: true };
+        return {
+          content: [
+            { type: 'text', text: `第 ${data.n} 张：${data.title}（来源：${data.site || '未知'}）` },
+            { type: 'image', mimeType: data.image.mimeType, data: data.image.data }
+          ]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `预览失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+  server.tool(
+    'qq_send_web_image',
+    '把看过（qq_preview_image）的候选图发到管理员私聊。只能发本次搜索里看过的编号；图片单独成一条消息，想说的话用 qq_send_message 另发。返回成功才能说发了。',
+    {
+      key: z.string().describe('会话 key（管理员私聊）'),
+      token: z.string().describe('会话令牌'),
+      n: z.number().int().describe('要发的候选编号（必须先预览过）')
+    },
+    async ({ key, token, n }) => {
+      try {
+        const data = await agentApi('/api/socialV2/image-send', {
+          method: 'POST',
+          headers: { 'x-agent-token': token },
+          body: JSON.stringify({ key, n: Number(n) }),
+          timeoutMs: 90000
+        });
+        return { content: [{ type: 'text', text: `已发送第 ${data.n} 张：${data.title}（来源：${data.site || '未知'}）${data.fromThumb ? '。原图取不到，发的是缩略图' : ''}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `发图失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
