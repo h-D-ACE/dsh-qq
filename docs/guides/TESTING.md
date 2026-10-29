@@ -3,7 +3,7 @@
 ## 离线回归（不需要 QQ、SnowLuma、DSH 或网络）
 
 ```powershell
-npm run test:audit      # 70 个脚本：原版与各版本新增的离线回归，清单见 scripts/test-audit.mjs；macOS 上 test-console-encoding 是已知失败（只适用于 Windows）
+npm run test:audit      # 72 个脚本：原版与各版本新增的离线回归，清单见 scripts/test-audit.mjs；macOS 上 test-console-encoding 是已知失败（只适用于 Windows）
 npm run test:v030       # 只跑 v0.3.0 的四个新测试
 ```
 
@@ -38,6 +38,8 @@ npm run test:v030       # 只跑 v0.3.0 的四个新测试
 | `scripts/test-prompt-blocks.mjs` | 不常变的大块只在变化时注入：第一次完整、没变一行、内容 / 会话变化与满 N 次 / M 小时 / forget 后重新完整、持久化不存内容；端到端群规则每次都在、引导唤醒总完整 |
 | `scripts/test-auto-compact.mjs` | 自动压缩：配置规范化、阈值与冷却、超阈值空闲后执行 /compact 并让关键内容下次重新完整给、忙 / 未超 / 非二代 / 关闭时不压、手动接口只给控制台；控制台改压缩方式（提前压缩填几万 / 交给 DSH，校验 5～80 万、写进 config.json、马上按新阈值判断、AI 改不了） |
 | `scripts/test-default-roles.mjs` | 恢复默认人格：发布包自带的原版卡合法、状态（在 / 被删 / 改过）、被删放回、改过先备份再恢复、本来就是原版不动、备份最多 10 份、不是默认人格拒绝；端到端（恢复当前人格按生效方式处理、不自动切换人格、AI 调不了） |
+| `scripts/test-role-per-key.mjs` | 按会话设置人格卡：老状态文件不变、byKey 命中 / 未命中 / null 三种回落、非法 key 与别名、路径穿越拒绝、改名 / 删除跟随；各会话注入自己的卡（二代【当前角色】、一代角色提示、qq_get_prompt）；只给卡变了的会话安排读卡唤醒；控制台接口与 AI 调不了；`/role` 只改当前会话、群友发的不生效 |
+| `scripts/test-backfill.mjs` | 断线补收：断档检测（含桥接重启后读回）、消息 ID 去重、命令类识别、挑选（时间窗 / 自己发的 / 收过的 / 太旧 / 上限）；端到端（补收进未读带原始时间与标记、有 @ 排唤醒、唤醒提示说明是补收的且送达后清掉、不执行补收到的命令只提醒管理员、重复补收不重复、太旧不唤醒、非二代不补）；启动后第一个事件包自动触发；拉历史失败时记下没补上的时间、重试、下次从更早的时间补 |
 | `scripts/test-send-limit-console.mjs` | 发言上限：超过每分钟上限 AI 收到说明（桥接的上限，不是 QQ 的）、控制台状态里有最近 24 小时被拦次数（AI 拿不到）、控制台改上限马上生效；总览页卡片 |
 | `scripts/test-agent-preset-patches.mjs` | preset 源与 bundle patch 不漂移（含新 preset） |
 

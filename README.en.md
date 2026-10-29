@@ -1,10 +1,10 @@
 # QQ ↔ DeepSeek Harness Bridge (qq-bridge-enhanced)
 
-**Supported systems: Windows · macOS · Linux** (qq-bridge-enhanced v1.1.1 · repository <https://github.com/h-D-ACE/dsh-qq>)
+**Supported systems: Windows · macOS · Linux** (qq-bridge-enhanced v1.1.2 · repository <https://github.com/h-D-ACE/dsh-qq>)
 
 **English**: [README.en.md](README.en.md) | **中文**: [README.md](README.md)
 
-> **qq-bridge-enhanced v1.1.1** ([h-D-ACE/dsh-qq](https://github.com/h-D-ACE/dsh-qq)) — a fork of [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) v0.2.0-r3 (with the upstream r4 fixes merged in; origin and licensing in [NOTICE.md](NOTICE.md)).
+> **qq-bridge-enhanced v1.1.2** ([h-D-ACE/dsh-qq](https://github.com/h-D-ACE/dsh-qq)) — a fork of [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) v0.2.0-r3 (with the upstream r4 fixes merged in; origin and licensing in [NOTICE.md](NOTICE.md)).
 > It turns one QQ account into an "AI group member" driven by DeepSeek Harness (DSH) agents, and runs on **Windows, macOS and Linux**.
 > Most documentation is in Chinese: the step-by-step deployment guide is [docs/DSH_DEPLOYMENT.md](docs/DSH_DEPLOYMENT.md), the changelog is [CHANGELOG.md](CHANGELOG.md),
 > and the documentation index is [docs/README.md](docs/README.md).
@@ -32,9 +32,11 @@ QQ friends/groups become DSH conversations, and agent replies (including questio
 | Long-session compaction (v1.1.1) | When a simulation conversation's last step read more than a threshold (300k tokens by default; adjustable from 50k to 800k in the console, or leave it to DSH at about 800k), the bridge compacts it once while idle. The slang table and sticker block are only injected in full when they change. Measured: group A went from 679k to 33k tokens per step | [CONFIGURATION.md](docs/guides/CONFIGURATION.md) |
 | Token mis-copy recovery (v1.1.1) | When the AI mis-copies its session token by one or two characters it gets a clear hint; after 3 misses the bridge issues a fresh token (session and memory untouched). Audited internal output in simulation mode no longer posts an interception notice to the group | [CHANGELOG.md](CHANGELOG.md) |
 | Usability (v1.1.1) | Scheduled silence can wake only on @ / private messages; "Restore default persona" in the console (the edited copy is backed up first); edit the send limits on the overview page and see how often they were hit; one click to have the AI describe stickers | [SILENCE.md](docs/guides/SILENCE.md) |
+| Per-conversation persona (v1.1.2) | Each group / private chat can use its own persona card or none; the rest follow the global one. The owner's `/role <name>` / `/role off` / `/role default` in QQ now changes only the current conversation; a change only wakes conversations whose card actually changed | [roles/README.md](roles/README.md) |
+| Backfill after disconnects (v1.1.2) | After the link to QQ drops (computer sleep, NapCat restart…), the bridge fetches the messages it missed through the history API, keeping their original time so the AI knows they are late; commands and confirmation codes in backfilled messages are never executed; failed fetches are retried | [CONFIGURATION.md](docs/guides/CONFIGURATION.md) |
 | Quoted merged forwards (v1.0.3) | Quoting an older merged forward no longer stalls the message for 30 s; the AI can open the quoted forward (nested ones too), results are cached | [CHANGELOG.md](CHANGELOG.md) |
 | DSH model picker | Provider / model / reasoning effort as three linked selects fed by DSH's own model catalog, applied from the next message without a restart; warns about third-party providers (chat content leaves DeepSeek), turns images into text for models that can't see images, and marks unpriced models as estimated | [CONFIGURATION.md](docs/guides/CONFIGURATION.md) |
-| DSH 0.2.1 | Works with DSH 0.2.0-rc.2 and 0.2.1 (v1.1.1 was tested on the 0.2.1-rc.2 desktop app); the 0.2.1 desktop app's random port is detected automatically, and the bridge follows it after DSH restarts | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
+| DSH 0.2.1 | Works with DSH 0.2.0-rc.2 and 0.2.1 (v1.1.2 was tested on the 0.2.1-rc.2 desktop app); the 0.2.1 desktop app's random port is detected automatically, and the bridge follows it after DSH restarts | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
 
 ## Deployment (no-window launchers)
 

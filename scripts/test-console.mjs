@@ -1,4 +1,8 @@
 // 控制台增强功能综合测试（node 直接调 API）
+//
+// ⚠️ 这不是离线测试：它连的是本机 3100 端口上**正在运行的真实桥接**，会临时切换全局人格、改白名单、
+// 往测试群 123456789 真实发一条消息（结束时都会还原）。不在 test:audit 里。
+// 为了不在真实环境里误跑，必须显式加 --live（npm run test-console -- --live）。
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +10,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const BASE = 'http://127.0.0.1:3100';
+if (!process.argv.includes('--live')) {
+  console.log('test-console.mjs 会操作正在运行的真实桥接（临时切换人格、改白名单、真实发送一条测试消息）。');
+  console.log('确认要在这台机器上跑，请加 --live：npm run test-console -- --live');
+  process.exit(0);
+}
 
 function readConsoleToken() {
   try {

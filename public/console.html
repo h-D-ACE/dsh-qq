@@ -2069,6 +2069,26 @@ button:active:not(:disabled) {
         </div>
       </details>
 
+      <details class="settings-group" id="roleAssignGroup">
+        <summary>按会话设置人格</summary>
+        <div class="settings-content">
+          <div class="meta">给某个群或私聊单独换一张卡，或者让它不挂角色卡；没单独设置的会话用上面「当前启用的人格」。人格正文还是 <code>roles/</code> 里的同一份文件。管理员在 QQ 里发 <code>/role 名字</code>、<code>/role off</code>、<code>/role default</code> 也只改发命令的那个会话。</div>
+          <div id="roleAssignList" style="margin-top:8px">加载中…</div>
+          <div class="row" style="margin-top:8px">
+            <input type="text" id="roleAssignKey" placeholder="group:群号 或 private:QQ号" style="flex:0 1 220px" autocomplete="off">
+            <select id="roleAssignNewUse" style="flex:0 1 220px"></select>
+            <button id="roleAssignAdd" class="small">添加</button>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px">
+            <span class="meta" style="margin:0">保存后二代仿真里：</span>
+            <label class="sched-chip" style="margin:0;white-space:nowrap"><input type="radio" name="roleAssignApply" value="nextWake" checked> 下次唤醒时重新读卡</label>
+            <label class="sched-chip" style="margin:0;white-space:nowrap"><input type="radio" name="roleAssignApply" value="immediate"> 立即切换（现在就唤醒这个会话读新卡）</label>
+          </div>
+          <div class="meta">改了下拉框要点这一行的「保存」才生效，没保存的会标「未保存」。列表停在这一页时每 15 秒自动更新（新建的会话、QQ 里 <code>/role</code> 的改动都会出现）。生效方式只看这里这一组，和上面「切换当前启用的人格」的选项各管各的；选「立即」也只唤醒保存的那一个会话（卡没变就不唤醒，定时静默中的等静默结束）。聊天模式 / 一代仿真每条消息都带角色卡，下一条消息就用新卡。QQ 里发 <code>/role</code> 一律是下次唤醒时读卡。</div>
+          <div class="meta" id="roleAssignMsg"></div>
+        </div>
+      </details>
+
       <details class="settings-group">
         <summary>恢复默认人格</summary>
         <div class="settings-content">
@@ -3259,6 +3279,102 @@ function resetRoleForm() {
   setRoleMsg('');
 }
 
+/** 按会话设置人格：下拉框选项（跟随全局 / 不挂卡 / 各人格）。value 形如 default、off、role:名字。 */
+function roleAssignOptions(select, current, globalRole) {
+  select.replaceChildren();
+  const add = (value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = text; select.appendChild(o); };
+  add('default', '跟随全局默认' + (globalRole ? '（' + globalRole + '）' : '（不挂卡）'));
+  add('off', '不挂角色卡');
+  for (const role of roleCache) add('role:' + role.name, role.name);
+  if (current && current.startsWith('role:') && ![...select.options].some((o) => o.value === current)) add(current, current.slice(5) + '（文件不存在）');
+  select.value = current || 'default';
+}
+function roleAssignApplyMode() {
+  const el = document.querySelector('input[name="roleAssignApply"]:checked');
+  return el ? el.value : 'nextWake';
+}
+function roleAssignBody(key, value) {
+  const apply = roleAssignApplyMode();
+  if (value === 'default' || value === 'off') return { key, use: value, apply };
+  return { key, use: 'role', role: value.slice(5), apply };
+}
+// 下拉框改了还没点「保存」的会话：key -> 选的值。列表重新加载时保留这些选择，并标出「未保存」。
+const roleAssignDirty = new Map();
+async function saveRoleAssign(key, value) {
+  const x = await api('/api/roles/assign', 'POST', roleAssignBody(key, value));
+  if (x.ok) roleAssignDirty.delete(x.key);
+  const msg = document.getElementById('roleAssignMsg');
+  msg.className = x.ok ? 'meta ok' : 'meta err';
+  msg.textContent = !x.ok ? '❌ ' + (x.error || '保存失败')
+    : '✅ ' + x.key + (x.source === 'global' ? ' 跟随全局默认' : x.source === 'off' ? ' 不挂角色卡' : ' 单独使用「' + x.role + '」') + roleSaveRefreshText(x.refresh);
+  if (x.ok) refreshRoles();
+  return x.ok;
+}
+function renderRoleAssignments(r) {
+  const box = document.getElementById('roleAssignList');
+  if (!box) return;
+  const globalRole = r.current || null;
+  const list = Array.isArray(r.assignments) ? r.assignments : [];
+  box.replaceChildren();
+  if (!list.length) box.textContent = '还没有会话。有群或私聊和 AI 聊过之后会出现在这里，也可以在下面直接填会话添加。';
+  for (const a of list) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.marginTop = '4px';
+    row.dataset.roleAssignKey = a.key;
+    const label = document.createElement('code');
+    label.style.flex = '0 0 auto';
+    label.style.minWidth = '170px';
+    label.textContent = a.key;
+    row.appendChild(label);
+    const sel = document.createElement('select');
+    sel.style.flex = '0 1 220px';
+    const saved = a.source === 'off' ? 'off' : a.source === 'key' ? 'role:' + a.role : 'default';
+    roleAssignOptions(sel, saved, globalRole);
+    // 之前改了没保存：保留那个选择（选项还在的话）
+    const pending = roleAssignDirty.get(a.key);
+    if (pending !== undefined) {
+      if (pending !== saved && [...sel.options].some((o) => o.value === pending)) sel.value = pending;
+      else roleAssignDirty.delete(a.key);
+    }
+    row.appendChild(sel);
+    if (a.source !== 'global') { const p = document.createElement('span'); p.className = 'pill b'; p.textContent = '单独设置'; row.appendChild(p); }
+    if (a.missing) { const p = document.createElement('span'); p.className = 'pill r'; p.textContent = '人格文件不存在，现在不挂卡'; row.appendChild(p); }
+    const dirtyPill = document.createElement('span');
+    dirtyPill.className = 'pill r';
+    dirtyPill.textContent = '未保存';
+    dirtyPill.dataset.roleAssignDirty = '1';
+    dirtyPill.hidden = !roleAssignDirty.has(a.key);
+    row.appendChild(dirtyPill);
+    sel.addEventListener('change', () => {
+      if (sel.value === saved) roleAssignDirty.delete(a.key); else roleAssignDirty.set(a.key, sel.value);
+      dirtyPill.hidden = !roleAssignDirty.has(a.key);
+    });
+    const btn = document.createElement('button');
+    btn.className = 'small';
+    btn.textContent = '保存';
+    btn.addEventListener('click', () => saveRoleAssign(a.key, sel.value));
+    row.appendChild(btn);
+    box.appendChild(row);
+  }
+  const newSel = document.getElementById('roleAssignNewUse');
+  if (newSel) {
+    const keep = newSel.value;
+    const valid = (v) => v === 'default' || v === 'off' || roleCache.some((role) => 'role:' + role.name === v);
+    roleAssignOptions(newSel, valid(keep) ? keep : (roleCache[0] ? 'role:' + roleCache[0].name : 'off'), globalRole);
+  }
+}
+
+/** 只刷新「按会话设置人格」列表（进入人格页、以及停在人格页时定时调用）；正在操作下拉框时不打断。 */
+async function refreshRoleAssignments() {
+  const box = document.getElementById('roleAssignList');
+  if (!box || box.contains(document.activeElement)) return;
+  const r = await api('/api/roles');
+  if (!r || !Array.isArray(r.assignments)) return;
+  if (Array.isArray(r.summaries) && r.summaries.length === (r.roles || []).length) roleCache = r.summaries;
+  renderRoleAssignments(r);
+}
+
 async function refreshRoleDefaults() {
   const box = document.getElementById('roleDefaultsList');
   if (!box) return;
@@ -3310,6 +3426,7 @@ async function refreshRoles() {
     roleCache = Array.isArray(r.summaries) && r.summaries.length === names.length
       ? r.summaries
       : names.map((name) => ({ name, chars: 0, bytes: 0, excerpt: '', truncated: false }));
+    renderRoleAssignments(r);
     const box = document.getElementById('roleList');
     box.replaceChildren();
     if (!roleCache.length) {
@@ -3663,6 +3780,12 @@ function showRoleApplyResult(r) {
 document.getElementById('roleSet').addEventListener('click', async () => {
   const r = await api('/api/role', 'POST', { role: document.getElementById('roleInput').value.trim(), apply: roleApplyMode() });
   if (r.ok) { showRoleApplyResult(r); refreshRoles(); } else alert(r.error || '设置失败');
+});
+document.getElementById('roleAssignAdd').addEventListener('click', async () => {
+  const input = document.getElementById('roleAssignKey');
+  const key = input.value.trim();
+  if (!key) { input.focus(); return; }
+  if (await saveRoleAssign(key, document.getElementById('roleAssignNewUse').value)) input.value = '';
 });
 document.getElementById('roleClear').addEventListener('click', async () => { const r = await api('/api/role', 'POST', { role: null, apply: roleApplyMode() }); showRoleApplyResult(r); refreshRoles(); refresh(); });
 document.getElementById('roleCreate').addEventListener('click', async () => {
@@ -5142,6 +5265,8 @@ function setConsolePage(page, { updateHash = true, focus = false, target = '' } 
   closeConsoleSearch();
   // 语音库按需加载：进入二代仿真页时才探测（避免每次开控制台都压网关）。
   if (page === 'social-v2' && typeof loadVoiceLibrary === 'function') loadVoiceLibrary();
+  // 人格页：每次进入都重新读一次各会话用哪张卡（全局人格可能在别处改过、新会话可能刚建好）
+  if (page === 'persona' && typeof refreshRoleAssignments === 'function') setTimeout(() => refreshRoleAssignments().catch(() => {}), 0);
   // 直接打开 #scheduler 时这里先于定时任务那段脚本执行：推迟到脚本跑完再刷新（否则会碰到还没初始化的变量）
   if (page === 'scheduler' && typeof refreshScheduler === 'function') setTimeout(() => refreshScheduler(), 0);
   if (focus) {
@@ -6159,6 +6284,8 @@ document.getElementById('compactSave').addEventListener('click', async () => {
 document.getElementById('compactWan').addEventListener('focus', () => { const e = document.querySelector('input[name="compactMode"][value="early"]'); if (e) e.checked = true; });
 loadCompactConfig();
 setInterval(() => { if (currentConsolePage === 'usage') loadCompactConfig(); }, 60_000);
+// 停在人格页时，每 15 秒同步一次「按会话设置人格」（QQ 里发了 /role、新群建了会话都能看到；没保存的选择会保留）
+setInterval(() => { if (currentConsolePage === 'persona' && !document.hidden) refreshRoleAssignments().catch(() => {}); }, 15_000);
 
 
 refresh(); refreshRoles(); refreshWhitelist(); refreshSessions(); refreshPending(); refreshPresets(); loadSocialForm(); loadV2Config(); refreshV2Activity(); loadV2ToolLog(); loadV2SessionOptions(); refreshSocialStatus(); refreshSlang(); loadSlangConfig(); loadSecurity(); refreshSimPrompt(); refreshDshModel(); refreshSilence(); refreshUsage(); refreshUsageChart(); refreshUsageRecent();

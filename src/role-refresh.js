@@ -93,10 +93,14 @@ export function createRoleRefreshTracker({ file, now = Date.now, onError = () =>
       entries[key] = { sessionId: String(sessionId), fp, at: now() };
       save();
     },
-    /** 从一组会话里挑出还没读到这一版卡的（控制台「立即」用）。sessions = { key: sessionId }。 */
+    /**
+     * 从一组会话里挑出还没读到这一版卡的（控制台「立即」用）。sessions = { key: sessionId }。
+     * fp 可以是一个指纹，也可以是 (key) => 指纹：各会话可以用不同的卡，按会话各算各的。
+     */
     stale(sessions, fp) {
+      const fpOf = typeof fp === 'function' ? fp : () => fp;
       return Object.entries(sessions ?? {})
-        .filter(([key, sid]) => this.needsRefresh(key, sid, fp))
+        .filter(([key, sid]) => this.needsRefresh(key, sid, fpOf(key)))
         .map(([key]) => key);
     },
     /** 会话上下文被压缩后：下次唤醒重新完整给一次角色卡（原来那份可能被压进摘要里了）。 */

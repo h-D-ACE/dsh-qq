@@ -54,6 +54,8 @@ import { createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt }
 import { describeInstant } from './scheduler/time.js';
 import { createSilenceSchedule, peakPresetRanges, describeRange, DIRECT_PASS_MS } from './silence-schedule.js';
 import { defaultRoleStatus, restoreDefaultRole } from './default-roles.js';
+import { normalizeRoleState, serializeRoleState, roleNameFor, roleSourceFor, withRoleForKey, renameRoleEverywhere, removeRoleEverywhere, roleInUse, roleAssignments, resolveRoleFile, canonicalConversationKey } from './role-per-key.js';
+import { normalizeBackfillConfig, createUpstreamGapTracker, createSeenMessageIds, selectBackfill, describeDuration, backfillNoticeBlock } from './backfill.js';
 import { createRoleRefreshTracker, roleFingerprint, buildRoleRefreshBlock, normalizeApplyMode } from './role-refresh.js';
 import { cleanImageQuery, searchBingImages, imageCandidatesText, createImageCandidateStore, createImageHourlyLimiter, IMAGE_SEARCH_PER_HOUR, IMAGE_SEND_PER_HOUR, IMAGE_PREVIEW_MAX_BYTES, IMAGE_SEND_MAX_BYTES } from './web-image.js';
 import { findNearToken, nearTokenError, tokenNoticeBlock, createTokenMissTracker } from './agent-token-guard.js';
@@ -348,7 +350,8 @@ function applyRoleInjectLimit(value) {
   if (!Number.isFinite(n)) return ROLE_INJECT_MAX_CHARS_DEFAULT;
   return Math.min(20000, Math.max(1000, Math.round(n)));
 }
-const ROLE_RESERVED_NAMES = new Set(['README']);
+// off / clear / default 是 /role 命令的关键字（本会话不挂卡 / 回到全局默认），不能当人格名
+const ROLE_RESERVED_NAMES = new Set(['README', 'off', 'clear', 'default']);
 // Windows 保留设备名：roles/CON.md 这类路径会被系统当成设备而不是文件，
 // 写入会失败甚至挂起，因此在人格名层面直接拒绝。
 const WINDOWS_RESERVED_NAMES = new Set([
@@ -670,12 +673,22 @@ function appendActivity(line) {
   appendActivityLog(`[${localClock()}] ${redactSensitiveText(String(line).replace(/[\r\n]+/g, ' '))}\n`);
 }
 
-// 读取角色/模式状态：{"role": "傲娇助手", "mode": "active"|"silent"}
+// 读取角色/模式状态：{"role": "傲娇助手", "mode": "active"|"silent", "byKey"?: { "group:123": "名字" | null }}
+// byKey 是按会话单独设置的人格卡（见 src/role-per-key.js）；读的时候人格名和会话 key 都重新校验。
 function readRoleState() {
-  return readJsonSafe(ROLE_STATE_FILE, { role: null, mode: 'active' });
+  return normalizeRoleState(readJsonSafe(ROLE_STATE_FILE, { role: null, mode: 'active' }));
 }
+// 只改全局人格 / 静默状态：各会话单独的设置原样保留
 function writeRoleState(role, mode) {
-  atomicWriteJson(ROLE_STATE_FILE, { role: role ?? null, mode: mode ?? 'active' });
+  const cur = readRoleState();
+  atomicWriteJson(ROLE_STATE_FILE, serializeRoleState({ role: role ?? null, mode: mode ?? 'active', byKey: cur.byKey }));
+}
+function writeRoleStateFull(next) {
+  atomicWriteJson(ROLE_STATE_FILE, serializeRoleState(next));
+}
+/** 这个会话实际用哪张卡（null = 不挂卡）；不传 key 时是全局默认。 */
+function roleNameForKey(key) {
+  return roleNameFor(readRoleState(), key);
 }
 function sanitizeRoleName(name) {
   return String(name ?? '').replace(/[^\w\u4e00-\u9fff-]/g, '');
@@ -1490,12 +1503,9 @@ function allowed(kind, id, cfg) {
 }
 
 // 二代会话 key 规范化：只接受 group:正整数 / private:正整数，并去掉前导零，避免同一会话出现多个别名。
+// 和按会话设置人格卡用的是同一个函数（src/role-per-key.js），两处规则不会漂移。
 function canonicalV2Key(key) {
-  const m = /^(group|private):(\d+)$/.exec(String(key ?? '').trim());
-  if (!m) return null;
-  const id = Number(m[2]);
-  if (!Number.isSafeInteger(id) || id <= 0) return null;
-  return `${m[1]}:${id}`;
+  return canonicalConversationKey(key);
 }
 
 const APPROVE_WORDS = new Set(['通过', '同意', '允许', '批准', 'yes', 'y', 'approve', 'ok']);
@@ -3936,6 +3946,116 @@ async function main() {
   function noteUpstreamPacket(kind) {
     snowlumaHealth.lastPacketAt = Date.now();
     snowlumaHealth.lastPacketKind = String(kind ?? '');
+    // 两次事件包隔了太久：中间断过（电脑睡眠、NapCat 重启、桥接停过），恢复后补收错过的消息（见 src/backfill.js）
+    const gap = upstreamGap.notePacket(normalizeBackfillConfig(cfg.snowluma?.backfill).gapMs);
+    if (gap) scheduleBackfill(gap);
+  }
+
+  // ── 断线期间错过的消息：恢复后补收（逻辑在 src/backfill.js）──────────────────────
+  const upstreamGap = createUpstreamGapTracker({ file: path.join(STATE_DIR, 'upstream-seen.json'), onError: (e) => log('补收：记录最后事件时间失败', e?.message ?? e) });
+  const seenMsgIds = createSeenMessageIds();
+  const backfillNotices = new Map(); // key -> { gapMs, count, earliestAgeMs }：下一次唤醒告诉 AI 未读里有补收的消息
+  let backfillPending = null; // { since, gapMs }
+  let backfillTimer = null;
+  let backfillRunning = null;
+  // 拉历史失败的会话（实测：Mac 半睡半醒时连接刚通、NapCat 实例还没起来，请求全失败）：
+  // 记下这个会话最早还没补上的时间，过一会儿重试；之后再断线，这个会话也从更早的时间开始补，不会漏掉中间那段。
+  const backfillUnfinished = new Map(); // key -> since
+  const BACKFILL_RETRY_MS = 60_000;
+  const BACKFILL_RETRY_MAX = 5;
+  let backfillRetryCount = 0;
+  let backfillRetryTimer = null;
+  function scheduleBackfill(gap) {
+    const c = normalizeBackfillConfig(cfg.snowluma?.backfill);
+    if (!c.enabled) return;
+    log(`[backfill] 和 QQ 的连接断过${describeDuration(gap.gapMs)}（最后一个事件包在 ${new Date(gap.since).toLocaleTimeString('zh-CN', { hour12: false })}），${Math.round(c.settleMs / 1000)} 秒后补收错过的消息`);
+    backfillPending = backfillPending ? { since: Math.min(backfillPending.since, gap.since), gapMs: Math.max(backfillPending.gapMs, gap.gapMs) } : gap;
+    if (backfillTimer) return;
+    backfillTimer = setTimeout(() => {
+      backfillTimer = null;
+      const job = backfillPending; backfillPending = null;
+      backfillRunning = (backfillRunning ?? Promise.resolve()).then(() => runBackfill(job)).catch((e) => log('[backfill] 补收出错', e?.message ?? e));
+    }, c.settleMs);
+    backfillTimer.unref?.();
+  }
+  /** 补收的对象：当前模式允许的群和私聊（有会话或有二代状态的），管理员私聊总在里面。 */
+  function backfillTargets() {
+    const keys = new Set([...Object.keys(state.sessions), ...socialV2.conversations.keys()]);
+    if (cfg.ownerQQ) keys.add(`private:${String(cfg.ownerQQ)}`);
+    return [...keys].filter((k) => /^(group|private):\d+$/.test(k) && isSessionAllowedInCurrentMode(k)).slice(0, 40);
+  }
+  async function runBackfill({ since, gapMs }) {
+    const c = normalizeBackfillConfig(cfg.snowluma?.backfill);
+    if (!c.enabled) return { skipped: 'disabled' };
+    if (currentMode !== 'reserved2' || cfg.socialV2?.enabled === false) {
+      // 其它模式会把补收的旧消息逐条交给模型回复，不补；只提醒一下
+      log(`[backfill] 当前不是二代仿真，没有补收；断线${describeDuration(gapMs)}期间的消息可能错过了`);
+      appendActivity(`和 QQ 的连接断过${describeDuration(gapMs)}，当前模式不补收，这段时间的消息可能错过了`);
+      return { skipped: 'mode' };
+    }
+    const summary = [];
+    const ownerCommands = [];
+    const failed = [];
+    for (const key of backfillTargets()) {
+      const [kind, id] = key.split(':');
+      // 上次没补上的会话：从它更早的那个时间开始补
+      const keySince = Math.min(since, backfillUnfinished.get(key) ?? since);
+      let res;
+      let failReason = '';
+      try {
+        res = kind === 'group'
+          ? await bot.request('get_group_msg_history', { group_id: Number(id), count: c.maxPerConversation })
+          : await bot.request('get_friend_msg_history', { user_id: Number(id), count: c.maxPerConversation });
+        if (!res || res.status !== 'ok' || res.retcode !== 0) failReason = String(res?.wording || res?.retcode || '无回执');
+      } catch (error) { failReason = String(error?.message ?? error); }
+      if (failReason) {
+        log(`[backfill] ${key} 拉历史消息失败：${failReason}`);
+        backfillUnfinished.set(key, keySince);
+        failed.push(key);
+        continue;
+      }
+      backfillUnfinished.delete(key);
+      const { items, skippedCommands } = selectBackfill(res.data?.messages, { key, since: keySince, seen: seenMsgIds, config: c });
+      if (kind === 'private' && String(id) === String(cfg.ownerQQ ?? '')) ownerCommands.push(...skippedCommands);
+      else if (skippedCommands.length) log(`[backfill] ${key} 有 ${skippedCommands.length} 条命令类消息，补收时不执行`);
+      let fresh = 0;
+      for (const item of items) {
+        try {
+          await handleIncoming(kind, id, item.event, cfg, { backfill: item });
+          if (!item.tooOld) fresh += 1;
+        } catch (error) { log(`[backfill] ${key} 补收一条消息出错：${error?.message ?? error}`); }
+      }
+      if (items.length) {
+        if (fresh) backfillNotices.set(key, { gapMs, count: items.length, earliestAgeMs: items[0].ageMs });
+        summary.push(`${key} ${items.length} 条${fresh < items.length ? `（${items.length - fresh} 条太旧，只记下不唤醒）` : ''}`);
+      }
+    }
+    if (ownerCommands.length) {
+      const preview = ownerCommands.slice(0, 5).map((x) => String(x.event?.raw_message ?? '').replace(/\d{6}/g, '******').slice(0, 30)).join('、');
+      void sendOwnerDirect(`⚠️ 桥接和 QQ 断开过${describeDuration(gapMs)}，这段时间你发的 ${ownerCommands.length} 条命令 / 确认没有执行：${preview}。需要的话请重发。`);
+    }
+    const failText = failed.length ? `；${failed.length} 个会话没拉到历史（QQ 可能还没完全恢复）` : '';
+    log(summary.length ? `[backfill] 补收完成：${summary.join('；')}${failText}` : `[backfill] 补收完成：${failed.length ? `没拉到历史${failText.slice(1)}` : '断线期间没有错过的消息'}`);
+    if (summary.length) appendActivity(`和 QQ 的连接断过${describeDuration(gapMs)}，已补收：${summary.join('；')}${failText}`);
+    // 有会话没拉到：过一会儿重试（最多 BACKFILL_RETRY_MAX 次）；都拉到了就清零
+    let retryInMs = 0;
+    if (!failed.length) backfillRetryCount = 0;
+    else if (backfillRetryCount < BACKFILL_RETRY_MAX) {
+      backfillRetryCount += 1;
+      retryInMs = BACKFILL_RETRY_MS;
+      log(`[backfill] ${Math.round(retryInMs / 1000)} 秒后重试没拉到的会话（第 ${backfillRetryCount}/${BACKFILL_RETRY_MAX} 次）`);
+      clearTimeout(backfillRetryTimer);
+      backfillRetryTimer = setTimeout(() => {
+        backfillRetryTimer = null;
+        backfillRunning = (backfillRunning ?? Promise.resolve()).then(() => runBackfill({ since, gapMs })).catch((e) => log('[backfill] 补收出错', e?.message ?? e));
+      }, retryInMs);
+      backfillRetryTimer.unref?.();
+    } else {
+      backfillRetryCount = 0;
+      log(`[backfill] 重试 ${BACKFILL_RETRY_MAX} 次仍没拉到：${failed.join('、')}；下次断线恢复时会从更早的时间一起补`);
+      appendActivity(`和 QQ 的连接断过${describeDuration(gapMs)}，有 ${failed.length} 个会话的历史消息一直没拉到，这段时间的消息可能错过了（下次断线恢复时会再补）`);
+    }
+    return { summary, ownerCommands: ownerCommands.length, failed, retryInMs };
   }
 
   /** 记下一次接收链路健康度。@param good - boolean；非布尔值忽略。 */
@@ -4449,14 +4569,15 @@ async function main() {
         }
         // 切换 / 清除人格后的生效方式：nextWake = 各会话下一次唤醒时带上新卡；immediate = 现在就唤醒一次。
         // 聊天模式 / 一代仿真每条消息都带角色卡，切换本来就立即生效。
-        const applyRoleChange = (apply) => {
+        // onlyKeys：只看这些会话（按会话设置人格时只管保存的那一个，不顺带叫醒别的还没读新卡的会话）
+        const applyRoleChange = (apply, onlyKeys = null) => {
           const mode = normalizeApplyMode(apply);
           if (currentMode !== 'reserved2') return { apply: mode, mode: currentMode, note: '当前模式每条消息都带角色卡，已立即生效' };
           if (mode !== 'immediate') {
-            const pending = roleRefresh.stale(state.sessions, currentRoleFingerprintV2()).filter((k) => isSessionAllowedInCurrentMode(k)).length;
+            const pending = roleRefresh.stale(state.sessions, (k) => currentRoleFingerprintV2(k)).filter((k) => isSessionAllowedInCurrentMode(k) && (!onlyKeys || onlyKeys.includes(k))).length;
             return { apply: mode, mode: currentMode, woke: 0, pending };
           }
-          const r = refreshRoleNowV2();
+          const r = refreshRoleNowV2(onlyKeys);
           log(`控制台：角色卡立即生效，唤醒 ${r.woke.length} 个会话重新读卡${r.pending ? `（${r.pending} 个在定时静默里，下次唤醒再读）` : ''}`);
           return { apply: mode, mode: currentMode, woke: r.woke.length, pending: r.pending ?? 0 };
         };
@@ -4477,6 +4598,29 @@ async function main() {
             log('控制台：角色已清除');
             sendJson({ ok: true, role: null, refresh: applyRoleChange(body.apply) });
           }
+          return;
+        }
+        // 这张卡有没有会话在用（全局是它，或者有会话单独指定了它）：改它的内容时才需要让会话重新读卡
+        const roleUsedAnywhere = (name) => roleInUse(readRoleState(), name, Object.keys(state.sessions));
+        // 按会话设置人格卡（逻辑在 src/role-per-key.js）：use = default（跟全局）/ off（不挂卡）/ role（用 role 这张卡）
+        if (req.method === 'POST' && url.pathname === '/api/roles/assign') {
+          const body = await readBody();
+          const key = canonicalConversationKey(body.key);
+          if (!key) { sendJson({ ok: false, error: '会话格式应为 group:群号 或 private:QQ号' }, 400); return; }
+          const use = ['default', 'off', 'role'].includes(body.use) ? body.use : null;
+          if (!use) { sendJson({ ok: false, error: 'use 只能是 default / off / role' }, 400); return; }
+          let name = null;
+          if (use === 'role') {
+            try { name = validateRoleName(body.role); } catch (error) { sendJson({ ok: false, error: error.message }, 400); return; }
+            const file = resolveRoleFile(ROLES_DIR, name);
+            if (!file || !fs.existsSync(file)) { sendJson({ ok: false, error: `人格「${name}」不存在（roles/${name}.md）` }, 400); return; }
+          }
+          let next;
+          try { next = withRoleForKey(readRoleState(), key, use, name); } catch (error) { sendJson({ ok: false, error: error.message }, 400); return; }
+          writeRoleStateFull(next);
+          log(`控制台：${key} ${use === 'default' ? '回到全局默认人格' : use === 'off' ? '不挂角色卡' : `单独使用人格 ${name}`}`);
+          // 只有这个会话的卡变了；按会话算指纹，「立即」也只会唤醒它
+          sendJson({ ok: true, key, use, role: roleNameFor(next, key), source: roleSourceFor(next, key), refresh: applyRoleChange(body.apply, [key]) });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/role-mode') {
@@ -4507,6 +4651,8 @@ async function main() {
             roles: summaries.map((role) => role.name),
             summaries,
             current: rs.role ?? null,
+            // 按会话设置：已知会话（有 DSH 会话的 + 单独设置过的）各用哪张卡；missing = 引用的人格文件不存在
+            assignments: roleAssignments(rs, Object.keys(state.sessions), (n) => { const f = resolveRoleFile(ROLES_DIR, n); return !!f && fs.existsSync(f); }),
             limits: { nameMax: ROLE_NAME_MAX, contentMaxBytes: ROLE_CONTENT_MAX_BYTES, injectMaxChars: roleInjectMaxChars },
           });
           return;
@@ -4562,8 +4708,9 @@ async function main() {
           if (!fs.existsSync(roleFilePath(name))) { sendJson({ ok: false, error: `人格「${name}」不存在` }, 404); return; }
           writeRoleContent(name, content);
           log(`控制台：更新人格「${name}」（${content.length} 字符）`);
-          // 改的是当前启用的人格：按选的生效方式处理（默认下次唤醒；立即 = 现在就唤醒还没读到新卡的会话）。改的不是当前人格就不涉及。
-          const isActive = readRoleState().role === name;
+          // 改的是有会话在用的人格（全局默认或某个会话单独指定）：按选的生效方式处理（默认下次唤醒；立即 = 现在就唤醒还没读到新卡的会话）。
+          // 指纹按会话算，只有用这张卡的会话会被判为过期。没人用就不涉及。
+          const isActive = roleUsedAnywhere(name);
           sendJson({ ok: true, role: name, chars: content.length, warnings: roleWarnings(content), refresh: isActive ? applyRoleChange(body.apply) : { apply: normalizeApplyMode(body.apply), notActive: true } });
           return;
         }
@@ -4576,11 +4723,12 @@ async function main() {
           if (!fs.existsSync(roleFilePath(from))) { sendJson({ ok: false, error: `人格「${from}」不存在` }, 404); return; }
           if (fs.existsSync(roleFilePath(to))) { sendJson({ ok: false, error: `人格「${to}」已存在` }, 400); return; }
           fs.renameSync(roleFilePath(from), roleFilePath(to));
-          const rs = readRoleState();
-          const switched = rs.role === from;
-          if (switched) writeRoleState(to, rs.mode);
-          log(`控制台：人格重命名「${from}」→「${to}」${switched ? '（当前启用中，已跟随切换）' : ''}`);
-          sendJson({ ok: true, role: to, renamed: true, currentFollowed: switched });
+          // 全局和单独指定了它的会话都跟着改名
+          const rn = renameRoleEverywhere(readRoleState(), from, to);
+          const switched = rn.globalChanged;
+          if (switched || rn.changedKeys.length) writeRoleStateFull(rn.state);
+          log(`控制台：人格重命名「${from}」→「${to}」${switched ? '（当前启用中，已跟随切换）' : ''}${rn.changedKeys.length ? `（${rn.changedKeys.length} 个会话单独用它，已跟随）` : ''}`);
+          sendJson({ ok: true, role: to, renamed: true, currentFollowed: switched, keysFollowed: rn.changedKeys });
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/roles/delete') {
@@ -4589,11 +4737,12 @@ async function main() {
           try { name = validateRoleName(body.name); } catch (error) { sendJson({ ok: false, error: error.message }, 400); return; }
           if (!fs.existsSync(roleFilePath(name))) { sendJson({ ok: false, error: `人格「${name}」不存在` }, 404); return; }
           fs.rmSync(roleFilePath(name));
-          const rs = readRoleState();
-          const cleared = rs.role === name;
-          if (cleared) writeRoleState(null, rs.mode);
-          log(`控制台：删除人格「${name}」${cleared ? '（该人格正在启用，已同时清除当前人格）' : ''}`);
-          sendJson({ ok: true, deleted: name, clearedCurrent: cleared });
+          // 全局用它的清空；单独指定它的会话改成「不挂卡」（不会突然换成全局那张别的卡）
+          const rm = removeRoleEverywhere(readRoleState(), name);
+          const cleared = rm.globalCleared;
+          if (cleared || rm.changedKeys.length) writeRoleStateFull(rm.state);
+          log(`控制台：删除人格「${name}」${cleared ? '（该人格正在启用，已同时清除当前人格）' : ''}${rm.changedKeys.length ? `（${rm.changedKeys.length} 个会话单独用它，已改成不挂卡）` : ''}`);
+          sendJson({ ok: true, deleted: name, clearedCurrent: cleared, keysCleared: rm.changedKeys });
           return;
         }
 
@@ -4610,8 +4759,8 @@ async function main() {
           } catch (error) { sendJson({ ok: false, error: error.message }, 400); return; }
           if (r.unchanged) { sendJson({ ok: true, ...r }); return; }
           log(`控制台：恢复默认人格「${r.name}」${r.created ? '（原来被删了，已重新放回）' : `（改过的那份已备份到 state/role-backups/${r.backup}）`}`);
-          // 恢复的是当前启用的人格：和保存修改一样，按选的生效方式让各会话读到原版
-          const isActive = readRoleState().role === r.name;
+          // 恢复的是有会话在用的人格：和保存修改一样，按选的生效方式让用它的会话读到原版
+          const isActive = roleUsedAnywhere(r.name);
           sendJson({ ok: true, ...r, refresh: isActive ? applyRoleChange(body.apply) : { apply: normalizeApplyMode(body.apply), notActive: true } });
           return;
         }
@@ -5441,8 +5590,8 @@ async function main() {
             return;
           }
           const isV2 = currentMode === 'reserved2';
-          const roleState = readRoleState();
-          const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
+          const roleName = roleNameForKey(key);
+          const roleLine = roleName ? `【当前角色】${roleName}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
           // 二代必须带会话令牌，否则 AI 调用任何 MCP 状态/发送工具都会被拒。
           let tokenLine = '';
           if (isV2) {
@@ -5747,11 +5896,12 @@ async function main() {
           if (cfg.socialV2?.sticker?.enabled !== false) {
             try { await syncStickerLibrary(false); } catch {}
           }
-          const roleState = readRoleState();
-          const roleHintForPrompt = currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint();
+          // 按这个会话取卡：各会话可以单独指定人格或不挂卡
+          const roleNameForPrompt = roleNameForKey(key);
+          const roleHintForPrompt = currentMode === 'reserved2' ? currentRoleHintV2(key) : currentRoleHint(key);
           // AI 自己读了卡：记下这一版（只认带令牌的调用，控制台查看不算）
           if (req.headers['x-agent-token'] && currentMode === 'reserved2' && state.sessions[key]) {
-            roleRefresh.markSeen(key, state.sessions[key], roleFingerprint(roleState.role ?? null, roleHintForPrompt));
+            roleRefresh.markSeen(key, state.sessions[key], roleFingerprint(roleNameForPrompt, roleHintForPrompt));
           }
           const toolMap = {
             getPrompt: 'qq_get_prompt',
@@ -5808,7 +5958,7 @@ async function main() {
               userId: selfUserId || null,
               line: selfIdentityTextV2().trim() || null
             },
-            role: { name: roleState.role ?? null, hint: roleHintForPrompt },
+            role: { name: roleNameForPrompt, hint: roleHintForPrompt },
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
               send: cfg.socialV2?.send ?? {},
@@ -10680,7 +10830,7 @@ async function main() {
     st.activeExitAt = now;
     // 先取消尚未触发的旧回复/补刀定时器，避免退场期间再冒出旧发言
     cancelSocialTimers(key);
-    const roleHint = currentRoleHint();
+    const roleHint = currentRoleHint(key);
     const promptText = buildActiveExitPrompt(key, roleHint);
     scheduleSocialReply(
       key, promptText,
@@ -10744,7 +10894,7 @@ async function main() {
       // offline queue may have received more messages since this wake was queued.
       wakeState = getSocialV2State(key);
       wakeToken = wakeState.agentToken;
-      roleFpAtBuild = opts.wakeReason === 'bootstrap' ? null : currentRoleFingerprintV2();
+      roleFpAtBuild = opts.wakeReason === 'bootstrap' ? null : currentRoleFingerprintV2(key);
       // 引导唤醒总是完整给；其它唤醒按指纹决定黑话表 / 表情块给完整还是一行
       blockPlan = opts.wakeReason === 'bootstrap' ? null : {
         sticker: promptBlocks.decide(key, sessionId, 'sticker', stickerBlockTextV2()),
@@ -10782,7 +10932,7 @@ async function main() {
     }
     // 这次唤醒提示已经带着（或本来就是）当前这一版角色卡，记下来，下次不再重复给
     if (roleFpAtBuild) roleRefresh.markSeen(key, sessionId, roleFpAtBuild);
-    if (opts.wakeReason) tokenMiss.clearNotice(key);
+    if (opts.wakeReason) { tokenMiss.clearNotice(key); backfillNotices.delete(key); }
     if (blockPlan) for (const [name, plan] of Object.entries(blockPlan)) promptBlocks.delivered(key, sessionId, name, plan);
     if (wakeSnapshot && isCurrentSession(key, sessionId)
         && socialV2.conversations.get(canonicalV2Key(key)) === wakeState
@@ -10875,7 +11025,7 @@ async function main() {
               st.proactiveNextCheckAt = now + randInt(Number(cfg.social?.proactiveCheckMinMs ?? 2700000), Number(cfg.social?.proactiveCheckMaxMs ?? 5400000));
               if (Math.random() < Number(cfg.social?.proactiveProbability ?? 0.2)) {
                 enterActive(key);
-                const roleHint = currentRoleHint();
+                const roleHint = currentRoleHint(key);
                 const promptText = buildProactivePrompt(key, roleHint);
                 scheduleSocialReply(
                   key, promptText,
@@ -10991,7 +11141,7 @@ async function main() {
         log(`摘要投喂创建会话失败 (${k}): ${error?.message ?? error}`);
         continue;
       }
-      const roleHint = currentRoleHint();
+      const roleHint = currentRoleHint(k);
       const summaryText = `${roleHint ? roleHint + '\n\n' : ''}【群聊摘要】过去一段时间群里发生了这些（你未逐条参与）：\n${lines}\n\n【最近对话】\n${buildContextBlock(k)}\n\n你不需要回复，只需记住这些内容，后续聊天会更自然。`;
       const silentId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
       social.silentTurns.set(sessionId, [...(social.silentTurns.get(sessionId) ?? []), { id: silentId, ts: Date.now() }]);
@@ -11031,34 +11181,31 @@ async function main() {
 
   // 当前角色扮演提示：读 state/current-role.json + roles/<角色>.md，
   // 由桥接注入到 QQ 群消息（群友无法通过对话修改，只能由管理端写该文件）。
-  // 缓存 key 为两个文件的 mtime，mtime 未变时直接返回，避免每次同步读文件。
-  let roleHintCache = { key: '', raw: '' };
+  // 每个会话可以单独指定一张卡或者不挂卡（byKey，见 src/role-per-key.js），所以下面几个函数都带 key；
+  // 不传 key 时用全局默认。
+  // 缓存按人格名各存一份（几个群用不同的卡时不会互相挤掉），key 为文件 mtime + 大小。
+  const roleHintCache = new Map(); // 人格名 -> { key, raw }
   // 原始人格卡（按 mtime 缓存，不截断）。
-  function roleRawContent() {
+  function roleRawContent(key) {
     try {
-      const rs = readRoleState();
-      if (!rs.role) return '';
+      const name = roleNameForKey(key);
+      if (!name) return '';
       // 读取点也必须校验人格名：写入点（控制台 /role 命令）都过 sanitizeRoleName，
       // 但 state/current-role.json 是**用户可直接编辑**的文件。没有这道校验时，
       // {"role":"../../../../Users/Public/x"} 会让 roles/ 之外的文件被读进来并注入每一条提示词。
-      const safeName = sanitizeRoleName(rs.role);
-      if (!safeName || safeName.includes('..')) return '';
-      const roleFile = path.join(ROLES_DIR, safeName + '.md');
-      const resolved = path.resolve(roleFile);
-      if (!resolved.startsWith(path.resolve(ROLES_DIR) + path.sep)) return '';
-      if (!fs.existsSync(resolved)) return '';
-      const stateStat = fs.statSync(ROLE_STATE_FILE);
-      const roleStat = fs.statSync(roleFile);
-      // 缓存 key 必须带上**文件名与文件大小**，不能只看 mtime：
-      // ① 有些文件系统 mtime 只有秒级粒度（或时钟回拨），同一 tick 内把角色卡重写成新人格，
-      //    两个 mtime 完全相同 → 缓存命中 → 注入的还是旧人格，而且是每条提示词都错；
-      //    带上名字后，切换角色（例如 a.md → b.md）永远不会误命中。
-      // ② 同名的原地重写若长度变了（大多数编辑都会变），size 变化也能击穿缓存。
-      // 代价只是多几次 stat，比"热注入路径上一直发旧人格"划算得多。
-      const cacheKey = `${safeName}:${stateStat.mtimeMs}:${stateStat.size}:${roleStat.mtimeMs}:${roleStat.size}`;
-      if (roleHintCache.key === cacheKey) return roleHintCache.raw;
-      const raw = fs.readFileSync(roleFile, 'utf8');
-      roleHintCache = { key: cacheKey, raw };
+      // 全局 role 和 byKey 里的名字走同一条校验（resolveRoleFile：清洗名字 + 解析后必须在 roles/ 里）。
+      const resolved = resolveRoleFile(ROLES_DIR, name);
+      if (!resolved || !fs.existsSync(resolved)) return '';
+      const roleStat = fs.statSync(resolved);
+      // 缓存 key 必须带上文件大小，不能只看 mtime：有些文件系统 mtime 只有秒级粒度（或时钟回拨），
+      // 同一 tick 内原地重写成新内容，mtime 相同但长度一般会变，size 能击穿缓存。
+      // 人格名已经是缓存的键，切换角色（a.md → b.md）不会误命中。
+      const cacheKey = `${roleStat.mtimeMs}:${roleStat.size}`;
+      const hit = roleHintCache.get(name);
+      if (hit && hit.key === cacheKey) return hit.raw;
+      const raw = fs.readFileSync(resolved, 'utf8');
+      if (roleHintCache.size > 64) roleHintCache.clear();
+      roleHintCache.set(name, { key: cacheKey, raw });
       return raw;
     } catch {
       return '';
@@ -11066,13 +11213,13 @@ async function main() {
   }
   // 按仿真模式取用：先用标题里的 〔一代〕/〔二代〕 标记筛掉另一模式的专属小节，
   // **再**按上限截断——这样另一模式的内容不会白白占掉本次的注入预算。
-  function roleHintForMode(mode) {
-    const selected = selectRoleText(roleRawContent(), mode);
+  function roleHintForMode(mode, key) {
+    const selected = selectRoleText(roleRawContent(key), mode);
     if (!selected) return '';
     return selected.length > roleInjectMaxChars ? truncateText(selected, roleInjectMaxChars) : selected;
   }
-  function currentRoleHint() {
-    return roleHintForMode('v1');
+  function currentRoleHint(key) {
+    return roleHintForMode('v1', key);
   }
 
   // 二代仿真模式专用角色提示：去掉一代的 [SILENT] / 空格分句等状态机指令，避免与工具协议冲突。
@@ -11162,9 +11309,9 @@ async function main() {
     return `第 ${bad.join('，')} 条之间像是把同一句话拆开了；如果两条拼起来才完整，请合并成一条，或把断点移到完整句子的边界。`;
   }
 
-  function currentRoleHintV2() {
+  function currentRoleHintV2(key) {
     // 先按 〔二代〕/〔一代〕 标记筛小节；下面的逐行过滤只是给「没标记的老卡片」兜底。
-    const raw = roleHintForMode('v2');
+    const raw = roleHintForMode('v2', key);
     if (!raw) return '';
     // 一代仿真模式专用指令整行过滤，避免污染二代工具协议。
     // 用 role-card.js 导出的那份（文件顶部已 import）：这里原先又抄了一份同源正则，
@@ -11447,7 +11594,7 @@ async function main() {
   }
 
   // ── 二代仿真模式（reserved2）唤醒调度 ──────────────────────────────────
-  function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = []) {
+  function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = [], extra = {}) {
     const st = getSocialV2State(key);
     const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
     const unreadLimit = Number(cfg.socialV2?.context?.unreadLimit) || 30;
@@ -11500,7 +11647,9 @@ async function main() {
       hasMedia: safeMedia.length > 0,
       forwardIds: safeForwardIds,
       hasForward: safeForwardIds.length > 0,
-      time: Date.now()
+      // 补收的消息记原始发送时间，并标上 backfill（AI 读未读时能看到这是断线期间错过、刚补收的）
+      time: Number.isFinite(extra.time) ? extra.time : Date.now(),
+      ...(extra.backfill ? { backfill: true } : {})
     };
     st.lastUnreadSeq = msg.seq;
     st.lastIncomingAt = Date.now();
@@ -11835,27 +11984,27 @@ async function main() {
 
   // 管理员托付（方案 C）：只要目标群会话有待处理的托付，任何原因的唤醒都会带上它；
   // 托付在最终投递时才取走（见 deliverPrompt 里的 ownerRelayStore.take）。
-  /** 当前角色卡（二代注入的那份文字）的指纹。 */
-  function currentRoleFingerprintV2() {
-    return roleFingerprint(readRoleState().role ?? null, currentRoleHintV2());
+  /** 这个会话当前角色卡（二代注入的那份文字）的指纹。各会话可以用不同的卡，按会话各算各的。 */
+  function currentRoleFingerprintV2(key) {
+    return roleFingerprint(roleNameForKey(key), currentRoleHintV2(key));
   }
 
   /** 这次唤醒要不要带「角色卡已更新」块；要的话返回块文字，否则 ''。 */
   function roleRefreshBlockV2(key, reason) {
     if (reason === 'bootstrap') return '';
     const sid = state.sessions[key];
-    if (!sid || !roleRefresh.needsRefresh(key, sid, currentRoleFingerprintV2())) return '';
-    return buildRoleRefreshBlock({ name: readRoleState().role ?? null, hint: currentRoleHintV2() });
+    if (!sid || !roleRefresh.needsRefresh(key, sid, currentRoleFingerprintV2(key))) return '';
+    return buildRoleRefreshBlock({ name: roleNameForKey(key), hint: currentRoleHintV2(key) });
   }
 
   /**
    * 控制台切换人格选了「立即」：对当前模式下还没读到新卡的二代会话各安排一次 roleRefresh 唤醒。
+   * 指纹按会话算：只有卡真的变了的会话才会被叫醒（改 A 群的卡不会唤醒 B 群）。
    * 定时静默里的会话照旧不唤醒（下一次唤醒时再带上新卡）。
    */
-  function refreshRoleNowV2() {
+  function refreshRoleNowV2(onlyKeys = null) {
     if (currentMode !== 'reserved2' || cfg.socialV2?.enabled === false || socialV2.paused) return { woke: [], skipped: 'notV2' };
-    const fp = currentRoleFingerprintV2();
-    const keys = roleRefresh.stale(state.sessions, fp).filter((k) => isSessionAllowedInCurrentMode(k));
+    const keys = roleRefresh.stale(state.sessions, (k) => currentRoleFingerprintV2(k)).filter((k) => isSessionAllowedInCurrentMode(k) && (!onlyKeys || onlyKeys.includes(k)));
     const woke = [];
     for (const k of keys) {
       if (silence.config().options.stopWakes && scheduledSilenceFor(k)) continue;
@@ -11878,6 +12027,9 @@ async function main() {
     // 令牌抄错过：把提醒放在最前面（送达后清掉，见 deliverPrompt）
     const tokenNotice = tokenMiss.notice(key);
     if (tokenNotice) text = `${tokenNoticeBlock(tokenNotice)}\n\n${text}`;
+    // 未读里有断线期间补收回来的消息：告诉 AI 它们不是刚发的（送达后清掉，见 deliverPrompt）
+    const bfNotice = backfillNotices.get(key);
+    if (bfNotice) text = `${backfillNoticeBlock(bfNotice)}\n\n${text}`;
     if (relays.length) text = `${text}\n\n${ownerRelayPromptBlock(relays)}`;
     return notes.length ? `${text}\n\n${scheduledPromptBlock(notes)}` : text;
   }
@@ -11898,8 +12050,8 @@ async function main() {
   }
 
   function buildWakePromptV2Core(key, reason, blockPlan = null) {
-    const roleState = readRoleState();
-    const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
+    const roleName = roleNameForKey(key);
+    const roleLine = roleName ? `【当前角色】${roleName}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
     const memoryText = formatMemoryV2(st);
@@ -11984,8 +12136,8 @@ async function main() {
   }
 
   function buildWakeReminderPromptV2(key) {
-    const roleState = readRoleState();
-    const roleLine = roleState.role ? `【当前角色】${roleState.role}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
+    const roleName = roleNameForKey(key);
+    const roleLine = roleName ? `【当前角色】${roleName}（完整角色卡请调用 qq_get_prompt 查看）\n\n` : '';
     const identityLine = selfIdentityTextV2();
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
@@ -12012,7 +12164,7 @@ async function main() {
       return;
     }
     // 「立即读卡」唤醒排队期间会话可能已经读到新卡（AI 自己调了 qq_get_prompt / 别的唤醒带上了），不用再叫
-    if (reason === 'roleRefresh' && !roleRefresh.needsRefresh(key, state.sessions[key], currentRoleFingerprintV2())) {
+    if (reason === 'roleRefresh' && !roleRefresh.needsRefresh(key, state.sessions[key], currentRoleFingerprintV2(key))) {
       log(`[reserved2] ${key} 已读到当前角色卡，跳过读卡唤醒`);
       return;
     }
@@ -12533,12 +12685,19 @@ async function main() {
     return `已在群 ${gid} 发送。`;
   }
 
-  async function handleIncoming(kind, id, event, cfg) {
+  async function handleIncoming(kind, id, event, cfg, opts = {}) {
     const key = convKey(kind, id);
+    // 补收（src/backfill.js）：断线期间错过、恢复后从历史接口拉回来的消息。只当聊天内容记下：
+    // 不执行任何命令 / 审批 / 确认码 / 角色切换，只在二代仿真里进未读。
+    const backfill = opts.backfill || null;
+    const incomingId = event?.message_id ?? event?.msg_id;
+    if (backfill && seenMsgIds.has(key, incomingId)) return;
+    seenMsgIds.add(key, incomingId);
+    if (backfill && currentMode !== 'reserved2') return;
     // ── v0.3.0 owner 管理通道：在**任何**模式与白名单判断之前拦截 ──────────────────
     // 只认 owner 的私聊（私聊对象与发送者都必须是 ownerQQ）。这里处理的消息绝不交给模型：
     // 确认码、TOTP 动态码、管理命令、审批回复。群里的同类命令在下面被拒绝。
-    if (kind === 'private' && ext.adminEnabled()
+    if (!backfill && kind === 'private' && ext.adminEnabled()
         && String(event.user_id) === String(cfg.ownerQQ ?? '') && String(id) === String(cfg.ownerQQ ?? '')) {
       const ownerText = (await segmentsToText(event.message ?? [], { includeReply: false })).trim();
       if (ownerText) {
@@ -12622,13 +12781,16 @@ async function main() {
       ext.observeMessage({ kind, id: String(id), event, directedAtSelf: quoteTargetIsSelf || atSelf || kind === 'private' });
     }
 
+    // 补收的消息到这里为止只做记录类的事：命令、审批、挂起提问的回答、角色切换一律不处理
+    if (backfill && (plainContent.startsWith('/') || /进入角色扮演|退出角色扮演|切换角色|设置角色|改角色|换角色|关闭角色扮演|开启角色扮演/.test(plainContent))) return;
+
     // v0.3.0 审批：带编号的回复（多个挂起时必须带编号）。
-    if (await tryHandleApprovalReply(key, plainContent, isOwner)) return;
+    if (!backfill && await tryHandleApprovalReply(key, plainContent, isOwner)) return;
 
     // 若该会话有挂起的提问/审批，先当作回答处理（用当前消息自己的文字，不含引用原文）。
     // 审批只有管理员消息会被消费；群友消息不能因为“审批挂起”而被吞掉，应继续走正常处理。
     const p = pending.get(key);
-    if (p && (p.kind === 'question' || isOwner)) {
+    if (!backfill && p && (p.kind === 'question' || isOwner)) {
       await handlePendingAnswer(p, plainContent, key, isOwner);
       return;
     }
@@ -12747,21 +12909,41 @@ async function main() {
       }
       if (plainContent === '/status') {
         const rs = readRoleState();
-        await sendToQQ(key, `会话 ${state.sessions[key] ?? '未创建'}；白名单 ${allowed(kind, id, cfg) ? '通过' : '拦截'}；角色 ${rs.role ?? '无'}；模式 ${rs.mode}`);
+        await sendToQQ(key, `会话 ${state.sessions[key] ?? '未创建'}；白名单 ${allowed(kind, id, cfg) ? '通过' : '拦截'}；角色 ${roleNameFor(rs, key) ?? '无'}${roleSourceFor(rs, key) === 'global' ? '' : '（本会话单独设置）'}；模式 ${rs.mode}`);
         return;
       }
+      // /role 只对当前所在的会话生效（在群里发切本群，私聊发切这个私聊）；全局默认人格在控制台改。
+      //   /role 名字    本会话用这张卡
+      //   /role off     本会话不挂角色卡（clear 同义）
+      //   /role default 本会话回到全局默认
+      //   /role         看本会话现在用哪张卡
+      // 只有管理员能走到这里（上面 !isOwner 已经 return）；改完下一次唤醒生效，二代会话会在唤醒提示里收到新卡。
       if (plainContent === '/role' || plainContent.startsWith('/role ')) {
-        const name = sanitizeRoleName(plainContent.slice(5).trim());
-        if (!name || name === 'off' || name === 'clear') {
-          writeRoleState(null, roleState.mode);
-          await sendToQQ(key, '已清除角色，恢复正常人格。');
+        const arg = plainContent.slice(5).trim();
+        const rs = readRoleState();
+        const globalText = rs.role ? `全局默认是「${rs.role}」` : '全局默认不挂角色卡';
+        if (!arg) {
+          const src = roleSourceFor(rs, key);
+          const now = roleNameFor(rs, key);
+          const nowText = src === 'off' ? '本会话不挂角色卡（单独设置）' : src === 'key' ? `本会话单独用「${now}」` : `本会话跟随全局默认（${rs.role ? `「${rs.role}」` : '不挂角色卡'}）`;
+          await sendToQQ(key, `${nowText}。用法：/role 名字（本会话换卡）、/role off（本会话不挂卡）、/role default（回到全局默认）。全局默认在控制台改。`);
+        } else if (arg === 'off' || arg === 'clear') {
+          writeRoleStateFull(withRoleForKey(rs, key, 'off'));
+          log(`管理员命令：${key} 不挂角色卡`);
+          await sendToQQ(key, `已关闭本会话的角色卡，只影响这里（${globalText}）。`);
+        } else if (arg === 'default') {
+          writeRoleStateFull(withRoleForKey(rs, key, 'default'));
+          log(`管理员命令：${key} 回到全局默认人格`);
+          await sendToQQ(key, `本会话已回到全局默认（${globalText}）。`);
         } else {
-          const roleFile = path.join(ROOT, 'roles', name + '.md');
-          if (!fs.existsSync(roleFile)) {
-            await sendToQQ(key, `角色「${name}」不存在。角色文件放 qq-bridge/roles/ 目录。`);
+          const name = sanitizeRoleName(arg);
+          const roleFile = name ? resolveRoleFile(ROLES_DIR, name) : null;
+          if (!roleFile || !fs.existsSync(roleFile)) {
+            await sendToQQ(key, `角色「${name || arg}」不存在。角色文件放 qq-bridge/roles/ 目录。`);
           } else {
-            writeRoleState(name, roleState.mode);
-            await sendToQQ(key, `已切换角色：${name}。`);
+            writeRoleStateFull(withRoleForKey(rs, key, 'role', name));
+            log(`管理员命令：${key} 切换角色为 ${name}`);
+            await sendToQQ(key, `本会话已切换角色：${name}，只影响这里（${globalText}）。`);
           }
         }
         return;
@@ -12782,7 +12964,11 @@ async function main() {
     // 二代仿真模式（reserved2）：唤醒调度
     if (currentMode === 'reserved2') {
       const sender = kind === 'group' ? (event.sender?.card || event.sender?.nickname || String(event.user_id)) : '私聊';
-      appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, mergeForwardIds(extractForwardIds(event.message ?? []), quotedForwardIds));
+      appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, event.message_id ?? event.msg_id ?? null, mediaList, event.user_id ?? null, mergeForwardIds(extractForwardIds(event.message ?? []), quotedForwardIds), backfill ? { time: backfill.timeMs, backfill: true } : {});
+      if (backfill?.tooOld) {
+        appendActivity(`${key} [reserved2] 补收（太旧，只记下不唤醒）：${textContent.slice(0, 80)}`);
+        return;
+      }
       // 二代同样收集群聊黑话学习素材（AI 自主提交之外，桥接仍自动提取高频陌生词）
       if (kind === 'group') feedSlangWindow(key, sender, plainContent);
       if (socialV2.paused) {
@@ -12800,7 +12986,7 @@ async function main() {
           scheduleWakeV2(key, reason);
         }
       }
-      appendActivity(`${key} [reserved2] 消息已入未读：${textContent.slice(0, 80)}`);
+      appendActivity(`${key} [reserved2] ${backfill ? '补收' : '消息'}已入未读：${textContent.slice(0, 80)}`);
       return;
     }
 
@@ -12810,7 +12996,7 @@ async function main() {
     }
 
     // 角色扮演提示注入（仅注入给 agent，不影响群友之间的正常对话语义）
-    const roleHint = currentRoleHint();
+    const roleHint = currentRoleHint(key);
 
     // 群聊里带发送者信息，私聊不用；角色提示注入到消息开头（agent 可见）；
     // 管理员消息带身份标记（供 agent 识别，但其权限仍受工具面硬限制）
@@ -12878,7 +13064,7 @@ async function main() {
 
       // 触发成功：进入活跃，贴最近上下文 + 当前消息 + 人格（仅此一次），让 AI 回复
       enterActive(key);
-      const roleHint = currentRoleHint();
+      const roleHint = currentRoleHint(key);
       const currentLine = (isOwner && kind === 'private') ? `【管理员】${sender}：${textContent}` : `${sender}：${textContent}`;
       const directionHint = textContent.includes('[引用') ? DIRECTION_HINT + '\n' : '';
       const replyInstruction = direct

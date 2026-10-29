@@ -294,6 +294,9 @@ export function makeFixtureState() {
   return {
     mode: 'reserved2', role: '小鲸鱼', roleMode: 'active', closedAgentPreset: '', paused: false,
     roles: ['小鲸鱼', '温柔助手', '技术伙伴'],
+    // 按会话设置人格（假群号）：null = 不挂卡
+    roleByKey: { 'group:123456789': '技术伙伴', 'group:987654321': null },
+    roleKnownKeys: ['group:123456789', 'group:987654321', 'group:555666777', 'private:10001'],
     roleContents: {
       小鲸鱼: '# 小鲸鱼\n\n- 性格：好奇、爱接梗，遇到不懂的会直接问\n- 说话风格：简短，偶尔用 emoji',
       温柔助手: '# 温柔助手\n\n- 性格：温和、有耐心\n- 说话风格：先共情再回答',
@@ -516,6 +519,11 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
               };
             }),
             current: state.role,
+            assignments: [...new Set([...state.roleKnownKeys, ...Object.keys(state.roleByKey)])].sort().map((key) => {
+              const has = Object.hasOwn(state.roleByKey, key);
+              const role = has ? state.roleByKey[key] : state.role;
+              return { key, source: !has ? 'global' : role === null ? 'off' : 'key', role, missing: !!role && !state.roles.includes(role) };
+            }),
             limits: { nameMax: 40, contentMaxBytes: 65536, injectMaxChars: state.roleInjectMax },
           });
           case '/api/roles/content': {
@@ -640,6 +648,16 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             if (body.mode === 'early' && !(Number(body.thresholdWan) >= 5 && Number(body.thresholdWan) <= 80)) return json({ ok: false, error: '压缩阈值要在 5～80 万 token 之间' }, 400);
             state.compactMode = body.mode; if (body.mode === 'early') state.compactThreshold = Number(body.thresholdWan) * 10000;
             return json({ ok: true, mode: body.mode, thresholdTokens: state.compactThreshold || 300000 });
+          }
+          case '/api/roles/assign': {
+            if (!/^(group|private):[1-9]\d*$/.test(String(body.key ?? ''))) return json({ ok: false, error: '会话格式应为 group:群号 或 private:QQ号' }, 400);
+            if (body.use === 'default') delete state.roleByKey[body.key];
+            else if (body.use === 'off') state.roleByKey[body.key] = null;
+            else if (body.use === 'role' && state.roles.includes(body.role)) state.roleByKey[body.key] = body.role;
+            else return json({ ok: false, error: `人格「${body.role}」不存在` }, 400);
+            const has = Object.hasOwn(state.roleByKey, body.key);
+            const role = has ? state.roleByKey[body.key] : state.role;
+            return json({ ok: true, key: body.key, use: body.use, role, source: !has ? 'global' : role === null ? 'off' : 'key', refresh: body.apply === 'immediate' ? { apply: 'immediate', mode: 'reserved2', woke: 1, pending: 0 } : { apply: 'nextWake', mode: 'reserved2', woke: 0, pending: 1 } });
           }
           case '/api/roles/restore-default':
             if (body.name === '小鲸鱼') { state.restoredWhale = true; return json({ ok: true, name: '小鲸鱼', created: false, unchanged: false, backup: '小鲸鱼-20261026-090000.md', refresh: { apply: body.apply || 'nextWake', woke: [], pending: 2 } }); }
