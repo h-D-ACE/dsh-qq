@@ -837,6 +837,7 @@ function loadConfig() {
         getImages: true,
         getForwardMsg: true,
         sendPoke: true,
+        recall: true,              // 撤回自己发的消息（sendMessage 之外的新能力）
         listStickers: true,
         getStickerImage: true,
         sendSticker: true,
@@ -6580,7 +6581,19 @@ async function main() {
             const burstHint = messages.length >= 3 ? '你已经连发了多条，确认是必要的吗？真人很少一口气补完。' : undefined;
             const spaceWarn = findCjkSpaceWarning(messages);
             const splitWarn = findSplitBoundaryWarning(messages);
-            sendJson({ ok: true, key, sent: sentMessages.length, failed: messages.length - sentMessages.length, delays, quoted: quotedInfo, ...(burstHint ? { hint: burstHint } : {}), ...(spaceWarn ? { warn: spaceWarn } : {}), ...(splitWarn ? { splitWarn } : {}) });
+            sendJson({
+              ok: true,
+              key,
+              sent: sentMessages.length,
+              failed: messages.length - sentMessages.length,
+              // 把 messageId 回传给 AI：撤回（qq_recall）需要它，否则 AI 发完就失去了抓手。
+              sentMessages: sentMessages.sentMeta ?? [],
+              delays,
+              quoted: quotedInfo,
+              ...(burstHint ? { hint: burstHint } : {}),
+              ...(spaceWarn ? { warn: spaceWarn } : {}),
+              ...(splitWarn ? { splitWarn } : {})
+            });
           } catch (error) {
             if (error?.sent?.length) {
               recordSentMessagesV2(key, error.sent);
@@ -6595,7 +6608,12 @@ async function main() {
             }
             if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
             saveSocialV2State();
-            sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
+            // 部分成功时也要把已发出那几条的 messageId 交回去，否则 AI 撤不了已经发出去的话。
+            sendJson({
+              ok: false,
+              error: error?.message ?? String(error),
+              ...(Array.isArray(error?.sentMeta) && error.sentMeta.length ? { sentMessages: error.sentMeta } : {})
+            }, 500);
           }
           return;
         }
@@ -6703,7 +6721,83 @@ async function main() {
           }
           return;
         }
-        // ── 表情包体系（reserved2） ──────────────────────────────────────
+        // ── 撤回自己发的消息（reserved2） ────────────────────────────────
+        // 只允许撤回**自己发的**消息：AI 说错话、发重复了、发错了地方，用它收回。
+        // 不提供撤回别人的消息（那是管理员权限，不该给 AI）。
+        // 底层 NapCat 的 delete_msg 对私聊/群聊都有效（实测：撤回后 get_msg 的 message 变空数组）。
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/recall') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const messageId = String(body.messageId ?? body.message_id ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (!messageId) { sendJson({ ok: false, error: 'messageId 不能为空' }, 400); return; }
+          if (!/^-?\d+$/.test(messageId) || Number(messageId) === 0) {
+            sendJson({ ok: false, error: 'messageId 必须是消息 id（非零整数）' }, 400);
+            return;
+          }
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅 reserved2 模式可用' }, 403); return; }
+          if (!req.headers['x-agent-token']) { sendJson({ ok: false, error: 'reserved2 模式撤回消息必须携带 agent token' }, 403); return; }
+          if (!agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (!v2ToolEnabled('recall')) { sendJson({ ok: false, error: '工具未启用：qq_recall' }, 403); return; }
+          const keyMatch = /^(group|private):(\d+)$/.exec(key);
+          if (!keyMatch) { sendJson({ ok: false, error: 'key 格式应为 group:群号 或 private:QQ号' }, 400); return; }
+          const kind = keyMatch[1];
+          const id = Number(keyMatch[2]);
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+            sendJson({ ok: false, error: '当前模式不允许操作该会话' }, 403);
+            return;
+          }
+          try {
+            // 「只能撤自己的」在这里强制校验，而不是靠接口层的软约束：
+            // 群聊和私聊都开放后，AI 只要拿到别人的 message_id 就能撤别人的话 ——
+            // 那是管理员权限，不能交给模型。这里只认桥接自己发出去的 id
+            // （sendMessagesV2 会把它记进 st.mySentMessageIds）。
+            const st0 = getSocialV2State(key);
+            const ownIds = Array.isArray(st0.mySentMessageIds) ? st0.mySentMessageIds : [];
+            if (!ownIds.includes(Number(messageId)) && !ownIds.includes(String(messageId))) {
+              sendJson({
+                ok: false,
+                error: '只能撤回自己发的消息（这个 id 不是本条会话里我发出去的）'
+              }, 403);
+              return;
+            }
+            await bot.raw('delete_msg', { message_id: Number(messageId) });
+            // 撤掉的 id 从白名单里移走，避免重复撤
+            st0.mySentMessageIds = ownIds.filter((x) => String(x) !== String(messageId));
+            // 记进上下文，避免 AI 以为自己还留了那句话
+            const st = getSocialV2State(key);
+            if (Array.isArray(st.recentMessages)) {
+              st.recentMessages.push({
+                messageId: null,
+                sender: '我',
+                text: '[已撤回一条消息]',
+                plain: '[已撤回一条消息]',
+                tail: '[已撤回一条消息]',
+                kind: 'recall',
+                quoteTargetIsSelf: false,
+                isOwner: true,
+                ownerLabel: '我',
+                isSelf: true,
+                media: [],
+                hasMedia: false,
+                forwardIds: [],
+                hasForward: false,
+                time: Date.now()
+              });
+              const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
+              if (st.recentMessages.length > recentLimit) st.recentMessages.splice(0, st.recentMessages.length - recentLimit);
+              saveSocialV2State();
+            }
+            log(`[reserved2] 工具撤回消息 ${key} msg=${messageId}`);
+            appendActivity(`${key} [reserved2] 撤回消息 ${messageId}`);
+            sendJson({ ok: true, key, messageId });
+          } catch (error) {
+            log(`[reserved2] 工具撤回失败 ${key} msg=${messageId}:`, error?.message ?? error);
+            sendJson({ ok: false, error: `撤回失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
+          }
+          return;
+        }
         // 搜图并发送：搜索（只回编号 + 标题 + 来源网站）→ 预览（缩略图进入 AI 视觉上下文，记为看过）→ 发送（只能发看过的候选）
         if ((req.method === 'GET' && (url.pathname === '/api/socialV2/image-search' || url.pathname === '/api/socialV2/image-preview')) || (req.method === 'POST' && url.pathname === '/api/socialV2/image-send')) {
           const body = req.method === 'POST' ? await readBody() : {};
@@ -9569,6 +9663,11 @@ async function main() {
     const assertSendAllowed = captureSendGuard(key);
     const [kind, id] = key.split(':');
     const sent = [];
+    // 与 sent 一一对应的发送回执（含 message_id），供调用方回传 messageId 让 AI 能撤回。
+    // 为什么要单独存：sent 里放的是**文本**，而撤回需要的是 OneBot 回的 message_id，
+    // 之前 onebotSend 的返回值被直接丢掉了 —— 结果 AI 发完消息拿不到 id，
+    // 撤回工具就成了死路（用户实测反馈）。
+    const sentMeta = [];
     const failed = [];
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
@@ -9577,8 +9676,27 @@ async function main() {
       sendChain = sendChain
         .then(async () => {
           assertSendAllowed();
-          await onebotSend(kind, id, msg, useReply, useAt);
+          const res = await onebotSend(kind, id, msg, useReply, useAt);
           sent.push(msg);
+          const mid = res?.message_id ?? null;
+          sentMeta.push({
+            text: String(msg ?? '').slice(0, 200),
+            messageId: mid,
+            messageSeq: res?.message_seq ?? null
+          });
+          // 记进「我发过的消息 id」白名单：撤回端点据此保证 AI 只能撤自己的。
+          if (mid != null) {
+            try {
+              const st = getSocialV2State(key);
+              const arr = Array.isArray(st.mySentMessageIds) ? st.mySentMessageIds : [];
+              arr.push(mid);
+              // 只保留最近 200 条，避免无限增长
+              st.mySentMessageIds = arr.slice(-200);
+              saveSocialV2State();
+            } catch (e) {
+              log('记录已发消息 id 失败（撤回白名单）:', e?.message ?? e);
+            }
+          }
         })
         .catch((error) => {
           log(`QQ 发送失败 (${key}):`, error?.message ?? error);
@@ -9593,9 +9711,14 @@ async function main() {
       if (failed.length > 0) {
         const err = new Error(`QQ 发送失败 ${failed.length}/${messages.length} 条：${failed[0]?.message ?? '未知错误'}`);
         err.sent = sent.slice();
+        err.sentMeta = sentMeta.slice();
         throw err;
       }
-      return sent;
+      // 返回值从「文本数组」升级为对象：既有 set 属性保证老调用方 `.length`/遍历仍可用，
+      // 又通过 sentMeta 暴露 messageId。
+      const result = sent.slice();
+      result.sentMeta = sentMeta;
+      return result;
     });
   }
 

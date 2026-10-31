@@ -335,6 +335,7 @@ const TOOL_CONFIG_FLAGS = {
   // token 才改注册期过滤的），又诱导模型误调。`qq_set_sticker_remark` 默认就是 `false`
   // （见 bridge.js 的 socialV2.tools 默认表），所以此前它一直是"默认关闭却仍然可见"。
   qq_send_poke: 'sendPoke',
+  qq_recall: 'recall',
   qq_get_message_images: 'getImages',
   qq_get_forward_msg: 'getForwardMsg',
   qq_list_stickers: 'listStickers',
@@ -779,6 +780,34 @@ if (cfg.socialV2?.tools?.sendPoke !== false) {
     }
   );
 }
+
+server.tool(
+  'qq_recall',
+  '撤回**自己刚发的**一条消息（说错话、发重了、发错地方时用）。群聊和私聊都能用。'
+    + 'messageId 从 qq_send_message / qq_send_burst 返回里的 sentMessages[].messageId 拿（这是最可靠的来源，每次发送都会回传）；'
+    + '也可以先用 qq_get_my_recent_messages 查自己最近发过什么。'
+    + '**只能撤回自己发的**：桥接只认本会话里你自己发出去的 message id，撤别人的会被拒绝（那是管理员的权限）。'
+    + 'QQ 对撤回有时限（普通消息约 2 分钟，超时就撤不回了），所以别拖 —— 发错了就立刻撤，不要留到下一轮。'
+    + '不要为了掩饰而频繁撤回 —— 真人偶尔手滑才撤，老是撤回反而很假。',
+  {
+    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().describe('会话令牌'),
+    messageId: z.union([z.number(), z.string()]).describe('要撤回的消息 id（来自 qq_send_message / qq_send_burst 返回的 sentMessages[].messageId）'),
+  },
+  async ({ key, token, messageId }) => {
+    try {
+      const data = await agentApi('/api/socialV2/recall', {
+        method: 'POST',
+        body: JSON.stringify({ key, messageId: String(messageId) }),
+        headers: { 'x-agent-token': token },
+        timeoutMs: 60000
+      });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `撤回失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
 
 server.tool(
   'qq_wait_for_messages',
@@ -1709,6 +1738,460 @@ if (cfg.socialV2?.tools?.ownerGroupAccess === true) {
         return { content: [{ type: 'text', text: serializeModelData(data) }] };
       } catch (error) {
         return { content: [{ type: 'text', text: `群规则操作失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 「更像人」扩展：QQ 空间（说说）、个性签名、在线状态、输入状态
+//
+// 这一组的风险等级明显高于聊天工具，所以**全部默认关闭**，并且：
+//   · 一律只在管理员（ownerQQ）本人私聊里可用 —— 群聊里任何人调都会被拒；
+//   · 每日次数上限由 config.json 的 socialV2.qzone 控制，超了直接拒绝；
+//   · 内容长度上限、可见范围白名单都在这里再校验一遍（不信任模型传参）。
+// 开关在 config.json → socialV2.tools（qzone / qzonePost / qzoneLike /
+// qzoneComment / setSignature / setOnlineStatus / setInputStatus）。
+// ════════════════════════════════════════════════════════════════════════
+
+const QZONE = {
+  maxPostsPerDay: 3,
+  maxSigChangesPerDay: 5,
+  defaultUgcRight: 4,
+  allowPublic: true,
+  maxContentChars: 300,
+  maxImages: 9,
+  commentMaxChars: 120
+};
+
+function qzoneCfg() {
+  const c = getConfig();
+  return { ...QZONE, ...(c.socialV2?.qzone ?? {}) };
+}
+
+// 管理员私聊判定：key 必须是 private:<ownerQQ>，且 ownerQQ 可用。
+// 群会话、别人的私聊一律拒绝 —— 这是这一组工具唯一的授权依据。
+function isOwnerPrivate(key) {
+  const c = getConfig();
+  const owner = String(c.ownerQQ ?? '').trim();
+  if (!owner) return { ok: false, error: 'config.json 没有配置 ownerQQ，空间/签名类工具不可用' };
+  const m = /^private:(\d+)$/.exec(String(key ?? '').trim());
+  if (!m) return { ok: false, error: '只能在管理员本人的私聊里使用（群聊/其他私聊一律拒绝）' };
+  if (m[1] !== owner) return { ok: false, error: '只能在管理员本人的私聊里使用' };
+  return { ok: true };
+}
+
+// 每日配额：按天计数，存在 state/qzone-quota.json。写失败时不阻塞（宁可多放一次，
+// 也不要因为磁盘问题让管理员失去能力），但会在日志里体现。
+const QUOTA_FILE = path.join(ROOT, 'state', 'qzone-quota.json');
+
+function todayKey() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function readQuota() {
+  try {
+    const j = JSON.parse(fs.readFileSync(QUOTA_FILE, 'utf8'));
+    if (j && j.day === todayKey()) return j;
+  } catch {}
+  return { day: todayKey(), post: 0, sig: 0 };
+}
+
+function bumpQuota(field) {
+  const q = readQuota();
+  q[field] = (q[field] ?? 0) + 1;
+  try { fs.writeFileSync(QUOTA_FILE, JSON.stringify(q), 'utf8'); } catch {}
+  return q;
+}
+
+function assertQuota(field, max) {
+  const q = readQuota();
+  if ((q[field] ?? 0) >= max) {
+    throw new Error(`今天的额度用完了（${field === 'post' ? '发说说' : '改签名'}每天最多 ${max} 次）`);
+  }
+}
+
+// 可见范围：1 公开 / 4 好友 / 16 部分人 / 128 指定人（QQ 空间既有档位）
+const UGC_RIGHT_LABEL = { 1: '公开', 4: '好友可见', 16: '部分人可见', 128: '指定人可见' };
+
+// 纯文字说说：直接用 OneBot 的 send_qzone_msg（NapCat 扩展接口）
+if (cfg.socialV2?.tools?.qzone === true && cfg.socialV2?.tools?.qzonePost === true) {
+  server.tool(
+    'qq_qzone_post',
+    '在**自己的 QQ 空间**发一条说说（会立刻真实发布，你的好友都看得到）。只在管理员本人私聊里可用。'
+      + '内容要像真人在空间里随手写的一句话：口语、简短、有情绪或生活感，不要写成通知/公告/汇报体，不要提「AI」「模型」「助手」这类暴露身份的字眼，不要加话题标签堆砌。'
+      + '一次只发一条，别为了覆盖不同话题连发。发完就完了，不要声称已通知谁。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      content: z.string().describe('说说正文，纯文字'),
+      images: z.array(z.string()).optional().describe('可选的图片路径/URL 数组（最多 9 张）'),
+      ugc_right: z.union([z.literal(1), z.literal(4), z.literal(16), z.literal(128)]).optional().describe('可见范围：1 公开 / 4 好友可见 / 16 部分人 / 128 指定人；不传用配置默认'),
+      target_uins: z.array(z.string()).optional().describe('ugc_right 为 16 或 128 时要可见的 QQ 号'),
+    },
+    async ({ key, token, content, images, ugc_right, target_uins }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        const qc = qzoneCfg();
+        assertQuota('post', qc.maxPostsPerDay);
+        const body = String(content ?? '').trim();
+        if (!body) return { content: [{ type: 'text', text: '说说正文不能为空' }], isError: true };
+        if (body.length > qc.maxContentChars) {
+          return { content: [{ type: 'text', text: `正文太长（${body.length} 字），上限 ${qc.maxContentChars} 字` }], isError: true };
+        }
+        const imgs = Array.isArray(images) ? images.slice(0, qc.maxImages) : [];
+        const right = ugc_right ?? qc.defaultUgcRight;
+        if (right === 1 && qc.allowPublic !== true) {
+          return { content: [{ type: 'text', text: '配置不允许公开发布说说（socialV2.qzone.allowPublic=false），换 4（好友可见）' }], isError: true };
+        }
+        if ((right === 16 || right === 128) && (!Array.isArray(target_uins) || target_uins.length === 0)) {
+          return { content: [{ type: 'text', text: 'ugc_right 为 16 或 128 时必须给出 target_uins' }], isError: true };
+        }
+        const params = { content: body, ugc_right: right };
+        if (imgs.length) params.images = imgs;
+        if (target_uins?.length) params.target_uins = target_uins;
+        const data = await onebot('send_qzone_msg', params);
+        bumpQuota('post');
+        return {
+          content: [{
+            type: 'text',
+            text: `已发布到 QQ 空间（${UGC_RIGHT_LABEL[right] ?? right}）${imgs.length ? `，带 ${imgs.length} 张图` : ''}。\n${serializeModelData(data)}`
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `发说说失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'qq_qzone_delete',
+    '删除自己在 QQ 空间的一条说说（按 tid）。只在管理员本人私聊里可用。只在管理员明确要求删某条时用，tid 从 qq_qzone_list 拿。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      tid: z.string().describe('说说的 tid'),
+    },
+    async ({ key, token, tid }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        const data = await onebot('delete_qzone_msg', { tid });
+        return { content: [{ type: 'text', text: `已删除 ${tid}。${data ? serializeModelData(data) : ''}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `删除失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.qzone === true && cfg.socialV2?.tools?.qzoneRead === true) {
+  server.tool(
+    'qq_qzone_list',
+    '读取自己在 QQ 空间的说说列表（只读）。只在管理员本人私聊里可用。用来回答「我空间最近发了什么」或找某条说说的 tid。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      limit: z.number().int().min(1).max(30).optional().describe('最多返回几条，默认 10'),
+    },
+    async ({ key, token, limit }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        const data = await onebot('get_qzone_msg_list', {});
+        const list = (data?.msglist ?? []).slice(0, limit ?? 10).map((m) => ({
+          tid: m.tid,
+          content: m.content,
+          time: m.time ? new Date(m.time * 1000).toLocaleString('zh-CN') : '',
+          comments: m.comment_num ?? 0,
+          images: (m.images ?? []).length,
+          private: !!m.is_private
+        }));
+        return { content: [{ type: 'text', text: serializeModelData({ total: data?.total ?? list.length, items: list }) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `读取说说失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+// 看好友的空间动态（只读）。参数沿用 NapCat 的 get_qzone_feeds。
+if (cfg.socialV2?.tools?.qzone === true && cfg.socialV2?.tools?.qzoneRead === true) {
+  server.tool(
+    'qq_qzone_feeds',
+    '读取 QQ 空间的动态流（好友的说说，只读）。只在管理员本人私聊里可用。返回内容用于了解大家在聊什么、谁最近发了什么。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      limit: z.number().int().min(1).max(20).optional().describe('最多返回几条，默认 10'),
+    },
+    async ({ key, token, limit }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        const data = await onebot('get_qzone_feeds', {});
+        const feeds = (data?.feeds ?? []).slice(0, limit ?? 10).map((f) => ({
+          uin: f.uin,
+          nickname: f.nickname,
+          time: f.time ? new Date(f.time * 1000).toLocaleString('zh-CN') : '',
+          key: f.key,
+          // html 太长，只留个长度提示：需要具体内容时模型应该用其它读工具
+          hasHtml: !!f.html
+        }));
+        return { content: [{ type: 'text', text: serializeModelData(feeds) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `读取空间动态失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.qzone === true && cfg.socialV2?.tools?.qzoneLike === true) {
+  server.tool(
+    'qq_qzone_like',
+    '给 QQ 空间里的一条说说点赞 / 取消赞。只在管理员本人私聊里可用。tid 与 target_uin 从 qq_qzone_feeds 或 qq_qzone_list 拿。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      tid: z.string().describe('说说 tid'),
+      target_uin: z.string().describe('这条说说属于谁（QQ 号）'),
+      action: z.enum(['like', 'unlike']).optional().describe('like 点赞（默认）/ unlike 取消赞'),
+    },
+    async ({ key, token, tid, target_uin, action }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        const act = action === 'unlike' ? 'unlike_qzone' : 'like_qzone';
+        await onebot(act, { tid, target_uin });
+        return { content: [{ type: 'text', text: act === 'like_qzone' ? `已给 ${target_uin} 的那条说说点赞` : '已取消赞' }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `点赞失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.qzone === true && cfg.socialV2?.tools?.qzoneComment === true) {
+  server.tool(
+    'qq_qzone_comment',
+    '在 QQ 空间里评论别人或自己的说说。只在管理员本人私聊里可用。'
+      + '⚠️ 评论发出后**没有接口可以撤回/删除**（NapCat 只提供删说说，不提供删空间评论），所以每一条评论都等于永久留在那里，只能由管理员自己在手机上删。'
+      + '不确定就别评论，宁可只点赞。'
+      + '评论要像真人在空间里随口说的一句：短、口语、有情绪，别写成客服口吻，别堆砌表情和话题标签，不要暴露你是 AI。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      tid: z.string().describe('说说 tid'),
+      target_uin: z.string().describe('这条说说属于谁（QQ 号）'),
+      content: z.string().describe('评论正文'),
+    },
+    async ({ key, token, tid, target_uin, content }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        const qc = qzoneCfg();
+        const body = String(content ?? '').trim();
+        if (!body) return { content: [{ type: 'text', text: '评论不能为空' }], isError: true };
+        if (body.length > qc.commentMaxChars) {
+          return { content: [{ type: 'text', text: `评论太长（${body.length} 字），上限 ${qc.commentMaxChars} 字` }], isError: true };
+        }
+        await onebot('comment_qzone', { tid, target_uin, content: body });
+        return { content: [{ type: 'text', text: `已在 ${target_uin} 的说说下评论` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `评论失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+// ── 个性签名 ────────────────────────────────────────────────────────────
+if (cfg.socialV2?.tools?.setSignature === true) {
+  server.tool(
+    'qq_set_signature',
+    '修改**自己的 QQ 个性签名**（立刻生效，所有好友和群友都能看到）。只在管理员本人私聊里可用。'
+      + '签名要像真人随手写的：一句话、有情绪或态度、可以自嘲吐槽，别写成广告、别堆标签、不要暴露你是 AI。'
+      + '改之前先想清楚这是别人点开你资料就会看到的长期门面，别乱改，一天别改太多次。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      signature: z.string().describe('新签名（一句话，建议 30 字内）'),
+    },
+    async ({ key, token, signature }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        const qc = qzoneCfg();
+        assertQuota('sig', qc.maxSigChangesPerDay);
+        const sig = String(signature ?? '').trim();
+        if (!sig) return { content: [{ type: 'text', text: '签名不能为空' }], isError: true };
+        if (sig.length > 80) return { content: [{ type: 'text', text: `签名太长（${sig.length} 字），建议 30 字内、上限 80 字` }], isError: true };
+        await onebot('set_self_longnick', { longNick: sig });
+        bumpQuota('sig');
+        return { content: [{ type: 'text', text: `签名已改为：${sig}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `改签名失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+// ── 在线 / 输入状态（让别人看到你「在用手机」「正在输入」） ────────────────
+if (cfg.socialV2?.tools?.setOnlineStatus === true) {
+  server.tool(
+    'qq_set_online_status',
+    '设置自己 QQ 的在线状态（在线/离开/忙碌/隐身等）。只在管理员本人私聊里可用。让人看起来不是 24 小时一直挂着。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      status: z.union([z.number(), z.string()]).describe('在线状态码：10 在线 / 20 离开 / 30 忙碌 / 40 隐身 / 50 请勿打扰（不同客户端可能略有差异）'),
+      ext_status: z.union([z.number(), z.string()]).optional().describe('扩展状态码，一般传 0'),
+      battery_status: z.union([z.number(), z.string()]).optional().describe('电量状态码，一般传 0'),
+    },
+    async ({ key, token, status, ext_status, battery_status }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        await onebot('set_online_status', {
+          status,
+          ext_status: ext_status ?? 0,
+          battery_status: battery_status ?? 0
+        });
+        return { content: [{ type: 'text', text: `在线状态已设为 ${status}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `设置在线状态失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.setInputStatus === true) {
+  server.tool(
+    'qq_set_input_status',
+    '给自己当前会话显示「正在输入」状态，让对面看到你真的在打字。只在管理员本人私聊里可用。真人在聊天里会先有这个动作再出消息，用它在长回复前垫一下更自然。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      user_id: z.string().describe('对着谁显示正在输入（QQ 号）'),
+      event_type: z.number().int().optional().describe('事件类型，默认 1'),
+    },
+    async ({ key, token, user_id, event_type }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        await onebot('set_input_status', { user_id, event_type: event_type ?? 1 });
+        return { content: [{ type: 'text', text: '已设置正在输入状态' }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `设置输入状态失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+// ── 自己的资料（昵称 / 签名 / 头像信息，只读）+ 改昵称 ─────────────────────
+// 说明：NapCat 没有 get_self_longnick，读自己的签名要借 get_stranger_info。
+if (cfg.socialV2?.tools?.qzone === true) {
+  server.tool(
+    'qq_my_profile',
+    '读取自己这个 QQ 号的公开资料（昵称、个性签名、等级、地区等，只读）。只在管理员本人私聊里可用。回答「我现在签名是什么」「我昵称是啥」时用。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+    },
+    async ({ key, token }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        const c = getConfig();
+        const me = String(c.botQQ ?? c.socialV2?.botQQ ?? '').trim() || (await onebot('get_login_info'))?.user_id;
+        const d = await onebot('get_stranger_info', { user_id: Number(me) });
+        return {
+          content: [{
+            type: 'text',
+            text: serializeModelData({
+              uin: d?.uin ?? me,
+              nickname: d?.nick ?? d?.nickname ?? '',
+              signature: d?.longNick ?? d?.long_nick ?? '',
+              qqLevel: d?.qqLevel ?? null,
+              country: d?.country ?? '',
+              province: d?.province ?? '',
+              city: d?.city ?? '',
+              age: d?.age ?? null,
+              sex: d?.sex ?? ''
+            })
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `读取资料失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+if (cfg.socialV2?.tools?.setSignature === true) {
+  server.tool(
+    'qq_set_nickname',
+    '修改**自己的 QQ 昵称**（立刻生效，所有好友群友都看得到）。只在管理员本人私聊里可用。'
+      + '昵称是长期门面，除非管理员明确要求，否则不要动。别改成广告或暴露 AI 身份的名字。',
+    {
+      key: z.string().describe('会话 key（必须是管理员私聊 private:<ownerQQ>）'),
+      token: z.string().describe('会话令牌'),
+      nickname: z.string().describe('新昵称（建议 12 字内）'),
+    },
+    async ({ key, token, nickname }) => {
+      try {
+        const auth = isOwnerPrivate(key);
+        if (!auth.ok) return { content: [{ type: 'text', text: auth.error }], isError: true };
+        const nick = String(nickname ?? '').trim();
+        if (!nick) return { content: [{ type: 'text', text: '昵称不能为空' }], isError: true };
+        if (nick.length > 24) return { content: [{ type: 'text', text: `昵称太长（${nick.length} 字），上限 24 字` }], isError: true };
+        await onebot('set_qq_profile', { nickname: nick });
+        return { content: [{ type: 'text', text: `昵称已改为：${nick}` }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `改昵称失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
+// ── 云 TTS 语音（Edge TTS，免费、无需 Key）──────────────────────────────
+// 与 qq_send_voice（只发语音库里现成文件）的区别：这里能把**任意文字**念出来。
+// 需要本机 edge-tts >= 7.3.0（旧版会被微软拒 403，见 src/tts-cloud.js 注释）。
+if (cfg.socialV2?.voice?.tts === true) {
+  server.tool(
+    'qq_speak',
+    '把你现在想说的话用**语音**发出去（真实合成一段真人感的语音，不是预置音频）。'
+      + '适合短句、撒娇、吐槽、念一段话——像真人发语音那样自然，不要长篇大论（建议 60 字内）。'
+      + '群聊和私聊都能用；合成会花一两秒，不需要反复重试；失败就老实说失败了，别假装发了语音。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌'),
+      text: z.string().describe('要念出来的话'),
+      voice: z.string().optional().describe('音色，默认 zh-CN-XiaoyiNeural（女声，活泼，偏卡通/小说腔，是你平时的声音）；想换口味可用 zh-CN-XiaoxiaoNeural（温暖）、zh-CN-YunxiNeural（男声阳光）、zh-CN-YunxiaNeural（男声可爱）；方言有 zh-CN-liaoning-XiaobeiNeural、zh-CN-shaanxi-XiaoniNeural'),
+      rate: z.string().optional().describe('语速，如 +10% / -10%，默认原速'),
+      pitch: z.string().optional().describe('音调，如 +2Hz / -2Hz，默认不变'),
+    },
+    async ({ key, token, text, voice, rate, pitch }) => {
+      try {
+        const body = String(text ?? '').trim();
+        if (!body) return { content: [{ type: 'text', text: '要念的文字不能为空' }], isError: true };
+        const { synthesizeToLibrary } = await import('./tts-cloud.js');
+        const r = synthesizeToLibrary(body, { cfg: getConfig(), voice, rate, pitch, namePrefix: 'speak' });
+        const data = await agentApi('/api/socialV2/send-voice', {
+          method: 'POST',
+          body: JSON.stringify({ key, file: r.name }),
+          headers: { 'x-agent-token': token }
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: `语音已发出（${r.duration ? r.duration.toFixed(1) + ' 秒，' : ''}${Math.round(r.bytes / 1024)} KB，音色 ${r.voice}）。\n${serializeModelData(data)}`
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `发语音失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );
