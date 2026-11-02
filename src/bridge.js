@@ -16,7 +16,7 @@ import { extractPresetPrefix, presetPromptBlockers, presetPromptWarnings, render
 import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport, selectRoleText } from './role-card.js';
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
-import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
+import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken, resolveDshHome } from './dsh-client.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE } from './sensitive.js';
 import { looksLikeUnfinished } from './v2-wait.js';
@@ -110,6 +110,7 @@ import {
 // v0.3.0：人际连续性（人物库/入群事件/跨群协作）与 owner 管理通道（模式切换/权限分级/审批增强）。
 // 业务规则全部在 src/social/* 与 src/admin/*，这里只接线。
 import { createBridgeExtensions, redactCredentials, normalizeMemberNotice, processMemberEvent, joinWakeInstruction, checkCrossGroup, queryPresence, queryActivity, resolveLevelPlan, permissionCommandSucceeded, L0_MODES, LEVEL_TEXT, parseOwnerCommandForGuard, createReconnectWatchdog, describeAgentError, agentErrorUserText, isConfigError, resolveDshBaseUrl, ownerRelayConfig, validateOwnerRelay, createOwnerRelayLimiter, createOwnerRelayStore, ownerRelayPromptBlock, ownerRelayResultText, ownerRelayNoticeText, GROUP_RULE_LIMITS, validateOwnerGroupAccess, normalizeRules, addRule, removeRule, rulesPromptBlock, peekView, groupRuleResultText, groupRuleNoticeText, isNapCatVersionInfo, looksLikePathOnlyError, stickerTempBase, writeTempSticker, findFavByMd5, napcatAddOk, qqBackendFromVersionInfo, qqBackendLabel, createDshHealth } from './bridge-extensions.js';
+import { isDshAuthError, buildDshAuthHint, createAuthHintGate } from './dsh-auth-hint.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -3771,6 +3772,8 @@ async function main() {
   };
   // 连续 2 次（约 10 秒）探活失败才判定「DSH 不可用」；偶发失败一次只在恢复时记一笔（src/lib/dsh-health.js）
   const dshHealth = createDshHealth({ threshold: 2 });
+  // 401：凭据读错目录时给出具体提示（src/dsh-auth-hint.js）；10 分钟内只提示一次。
+  const dshAuthHint = createAuthHintGate();
   const checkDsh = async () => {
     let ok = false;
     let lastErr = null;
@@ -3792,6 +3795,7 @@ async function main() {
       } catch {}
     }
     if (ok) {
+      dshAuthHint.reset();
       const rec = dshHealth.ok();
       if (dshReady && rec.recoveredFrom > 0) log(`DSH 探活偶发失败 ${rec.recoveredFrom} 次（${rec.reason?.label ?? '原因未知'}），已恢复，未判定为不可用`);
       await refreshMode();
@@ -3841,6 +3845,8 @@ async function main() {
       }
     } else {
       const v = dshHealth.fail(lastErr);
+      // DSH 从没就绪过（启动时就 401）也要提示：否则日志里只有「事件流 0 帧」，看不出是凭据的问题。
+      if (isDshAuthError(lastErr) && dshAuthHint.fail()) log(buildDshAuthHint({ dshHome: resolveDshHome() }));
       if (dshReady && v.unavailable) {
         dshReady = false;
         log(`⚠️ DSH 不可用（连续 ${v.failures} 次探活失败，原因：${v.reason.label}），QQ 消息将入队等待`);
@@ -13890,8 +13896,11 @@ async function main() {
         failureStreak += 1;
         retryMs = Math.min(30000, retryMs * 2);
         if (failureStreak === 3) {
-          log('⚠️ 连续多次连上 DSH 事件流后一帧都没收到就断开：多半是 DSH 侧事件流协议/版本不匹配'
-            + '（可在 DSH 里核对版本，或查看 issue #34）。已改为指数退避重连，不再每 3 秒刷屏。');
+          // 凭据被拒（401）时事件流同样连上就断：先排除鉴权，再怀疑协议版本。
+          log(dshAuthHint.recentlyFailed()
+            ? '⚠️ 连续多次连上 DSH 事件流后一帧都没收到就断开：原因是 DSH 拒绝了桥接的凭据（HTTP 401，见上面的提示），不是协议不匹配。已改为指数退避重连。'
+            : '⚠️ 连续多次连上 DSH 事件流后一帧都没收到就断开：多半是 DSH 侧事件流协议/版本不匹配'
+              + '（可在 DSH 里核对版本，或查看 issue #34；DSH 刚重启时出现一次属正常）。已改为指数退避重连，不再每 3 秒刷屏。');
         }
       }
       await sleep(retryMs);

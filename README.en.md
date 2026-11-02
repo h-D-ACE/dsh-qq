@@ -36,7 +36,7 @@ QQ friends/groups become DSH conversations, and agent replies (including questio
 | Backfill after disconnects (v1.1.2) | After the link to QQ drops (computer sleep, NapCat restart…), the bridge fetches the messages it missed through the history API, keeping their original time so the AI knows they are late; commands and confirmation codes in backfilled messages are never executed; failed fetches are retried | [CONFIGURATION.md](docs/guides/CONFIGURATION.md) |
 | Quoted merged forwards (v1.0.3) | Quoting an older merged forward no longer stalls the message for 30 s; the AI can open the quoted forward (nested ones too), results are cached | [CHANGELOG.md](CHANGELOG.md) |
 | DSH model picker | Provider / model / reasoning effort as three linked selects fed by DSH's own model catalog, applied from the next message without a restart; warns about third-party providers (chat content leaves DeepSeek), turns images into text for models that can't see images, and marks unpriced models as estimated | [CONFIGURATION.md](docs/guides/CONFIGURATION.md) |
-| DSH 0.2.1 | Works with DSH 0.2.0-rc.2 and 0.2.1 (v1.1.2 was tested on the 0.2.1-rc.2 desktop app); the 0.2.1 desktop app's random port is detected automatically, and the bridge follows it after DSH restarts | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
+| DSH 0.2.1 | Works with DSH 0.2.0-rc.2 and 0.2.1 (v1.1.2 was tested on the 0.2.1-rc.2 desktop app and re-checked on 0.2.1-rc.3); the 0.2.1 desktop app's random port is detected automatically, and the bridge follows it after DSH restarts | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
 
 ## Deployment (no-window launchers)
 

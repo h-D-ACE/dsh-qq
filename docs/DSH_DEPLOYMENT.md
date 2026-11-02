@@ -102,7 +102,7 @@ command -v dsh
 
 ```
 npm install -g @deepseek-ai/dsh@0.2.1-rc.2
-dsh --version            # 预期输出包含 0.2.1-rc.2（0.2.0-rc.2 也支持）
+dsh --version            # 预期输出包含 0.2.1-rc.2（0.2.0-rc.2 也支持；0.2.1-rc.3 已复核，见 DSH_020_ADAPTATION.md 末尾）
 dsh web                  # 会占用当前终端窗口，保持它开着；另开一个终端继续
 ```
 
@@ -562,7 +562,7 @@ zip -r "../qq-bridge-backup/qq-bridge-$(date +%Y%m%d-%H%M%S).zip" config.json st
 | 控制台脚本带 `?token=` 调 API 得到 401 | API 只认请求头 `x-console-token`（`?token=` 只用于打开页面） |
 | 发消息报 HTTP 426 | 直连时 `snowluma.httpUrl` 填成了 WS 端口（经接口平台时由「接入桥接」自动填写，不会出现） |
 | 发消息报 401 | 令牌不一致：经接口平台时重新点「接入桥接」；直连时见 docs/guides/DSH_SETUP.md「常见问题」 |
-| DSH 侧 401 | `DSH_HOME` 指向错误；`npm run test:dsh-auth` 定位 |
+| DSH 侧 401（事件流「收到 0 帧」、模型目录 / 设置都 401） | 桥接读错了 DSH 数据目录：把 `DSH_HOME` 设成 DSH 实际的数据目录，重启控制中心，再重跑 `setup-dsh.mjs` 并重启 DSH；桥接日志里有具体提示。见 docs/guides/DSH_SETUP.md「常见问题」 |
 | 解压后路径里有中文导致批处理乱码 | 换一个纯英文路径重新解压 |
 | 桥接控制台 `http://127.0.0.1:3100` 打不开 | 端口被占用（`consolePort` 改别的值）或桥接没在运行 |
 

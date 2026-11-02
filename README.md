@@ -45,7 +45,7 @@
 | 按会话设置人格卡（v1.1.2） | 每个群 / 私聊可以单独用一张卡或不挂卡，没单独设置的跟随全局；管理员在 QQ 里发 `/role 名字` / `/role off` / `/role default` 只改当前会话；换卡只唤醒卡真的变了的会话 | [roles/README.md](roles/README.md) |
 | 断线补收（v1.1.2） | 电脑睡眠、NapCat 重启等导致和 QQ 断开过，恢复后用历史消息接口补收错过的消息（带原始时间，AI 知道是迟到的）；补收到的命令和确认码一律不执行；拉取失败会重试 | [CONFIGURATION.md](docs/guides/CONFIGURATION.md) |
 | 引用合并转发（v1.0.3） | 引用一条较早的合并转发时不再卡住整条消息；AI 能打开引用里的转发（含嵌套），读取结果缓存 | [CHANGELOG.md](CHANGELOG.md) |
-| DSH 0.2.1 | 兼容 DSH 0.2.0-rc.2 与 0.2.1（v1.1.2 在 0.2.1-rc.2 桌面版上实测）；0.2.1 桌面版的随机端口自动识别、DSH 重启后自动跟上 | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
+| DSH 0.2.1 | 兼容 DSH 0.2.0-rc.2 与 0.2.1（v1.1.2 在 0.2.1-rc.2 桌面版上实测，0.2.1-rc.3 桌面版已复核）；0.2.1 桌面版的随机端口自动识别、DSH 重启后自动跟上 | [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) |
 
 ### 部署（无窗口版）
 
@@ -91,7 +91,7 @@ NapCat 要在它的 WebUI 里开启 WebSocket 服务端 `127.0.0.1:3001`）。�
 
 ---
 
-> ⚠️ **当前版本 `v1.1.2`，适配 DSH 0.2.0-rc.2 与 0.2.1**（0.2.1-rc.2 桌面版上实测；协议面逐项核对：`npm run verify:adaptation`）。
+> ⚠️ **当前版本 `v1.1.2`，适配 DSH 0.2.0-rc.2 与 0.2.1**（0.2.1-rc.2 桌面版上实测，0.2.1-rc.3 桌面版已复核；协议面逐项核对：`npm run verify:adaptation`）。
 > 鉴权用 `~/.dsh` 里持久化的浏览器会话签名密钥**离线铸造 Cookie**（DSH 0.1.7 起进程启动 token 只存在于内存、不再落盘）；
 > agent preset 是 `@deepseek-ai/dsh-agent-preset` Cordis 行（由 `setup-dsh.mjs` 写入，旧的 `~/.dsh/.agent-presets/` 目录机制已废）。
 > DSH 0.2.0 时的适配改动（会话待处理队列解析、QQ 安全守卫的工具名单对账等）见 [docs/guides/DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md)。

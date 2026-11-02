@@ -3,6 +3,18 @@
 本仓库（qq-bridge-enhanced）基于上游 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) `v0.2.0-r3`。
 上游更早的版本历史见 [docs/guides/DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md) 与上游 Release 页面。
 
+## 未发布
+
+### 改进：DSH 401 时说清楚原因（来自 issue）
+- 反馈：桥接读的 DSH 数据目录（默认 `~/.dsh`）和 DSH 实际用的不一致时，所有请求 401、事件流「本次收到 0 帧」，日志却提示「多半是事件流协议/版本不匹配」，把人引到了错误方向。
+- 新模块 `src/dsh-auth-hint.js`：探活遇到 401 时（包括启动后从没连上过的情况）在日志里说明读的是哪个凭据文件、有没有设 `DSH_HOME`、是否发现了另一个有凭据的目录，以及怎么改；10 分钟提示一次，恢复后重置。路径里的用户目录显示成 `~`，不读、不输出密钥内容。
+- 「事件流连上就断、一帧都没收到」的提示：最近有 401 时改说「原因是 DSH 拒绝了桥接的凭据」；其它情况补一句「DSH 刚重启时出现一次属正常」。
+- 新测试 `scripts/test-dsh-auth-hint.mjs`（已接入 `test:audit`）。
+
+### 文档
+- `DSH_SETUP.md`「常见问题」重写「DSH 一直 401」一条：原因、`DSH_HOME` 的设法（Windows / macOS / Linux）、要重跑 `setup-dsh.mjs`、自己验证时要用 POST（GET 得到 404 是正常的）；`DSH_DEPLOYMENT.md` 排查表同步。
+- DSH 桌面版 0.2.1-rc.3 复核：不需要改代码，记录见 [DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md)「附：DSH 0.2.1-rc.3 复核」。
+
 ## v1.1.2 —— 2026-10-29
 
 **按会话（群 / 私聊）分别设置人格卡**、**断线期间错过的消息恢复后补收**。

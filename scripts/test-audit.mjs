@@ -121,6 +121,7 @@ const tests = [
   'test-send-limit-console.mjs',
   'test-backfill.mjs',
   'test-role-per-key.mjs',
+  'test-dsh-auth-hint.mjs',
   'test-prompt-blocks.mjs',
   'test-agent-token-guard.mjs',
   // AI 收藏表情的后端适配：SnowLuma 照旧 base64://；NapCat 只收本地路径时改用桥接自建的受控临时文件（用完即删）。

@@ -573,3 +573,34 @@ Bing **RSS** 仅作兜底；5 分钟查询缓存；空结果显式 `note`。安�
 - `saveSocialV2State()` 写盘失败只记日志、接口仍回 `ok:true`（需写盘队列，改动面大）；
 - `auditAndSend` 的返回值不反映真实发送结果（主回复路径已由 `lastSendSucceeded()` 兜住）；
 - `toolCallNames` 在 `turn/end` 丢失时不回收（有 15 分钟租约兜底，增长极慢）。
+
+---
+
+## 附：DSH 0.2.1-rc.3 复核（2026-10-29）
+
+结论：**不需要改代码**。DSH 桌面版从 0.2.1-rc.2 自动更新到 0.2.1-rc.3 后，桥接（v1.1.2）没有重启就自己跟上了。
+
+### 怎么核对的
+
+- 对比两版的 `@deepseek-ai/*` 包（rc.2 取自 npm 的 `@deepseek-ai/dsh@0.2.1-rc.2`，rc.3 取自桌面版 `app.asar`），不计类型文件和 source map：
+  - 新增 `dsh-desktop-host`（桌面版的服务宿主）、`dsh-client-ui-entry-customization`（界面「更多」菜单），没有删除的包；
+  - 有改动的 70 个包几乎都是界面（`dsh-client-ui-*`）。服务端只有：`dsh-llm-deepseek*`（模型列表逻辑挪进共享库，
+    模型 id 仍是 `deepseek-flash` / `deepseek-v4-pro`）、`dsh-api-remotes`（只多了产品统计事件）、`dsh-agent-preset`（只改了内置技能文档）；
+  - 桥接依赖的协议、会话、设置、权限预设、MCP 客户端、工具相关的包都没变。
+- `scripts/scan-dsh-tool-names.mjs` 分别扫两版：工具名候选完全一致（60 个），守卫名单不用动。
+- 我们的 preset 补丁、`qq-mode-console`、profile patch 引用的 DSH 包在 rc.3 里都存在。
+- 端口：rc.3 的服务宿主由 Electron 主程序以 Node 模式启动（`--port 0`，随机端口），进程名仍是 `DeepSeek Harness`，
+  所以 macOS 的 `lsof -c DeepSeek`、Windows 的 `tasklist` 按 `DeepSeek Harness*.exe` 找端口都照常可用（Windows 只核对了代码，没有实机）。
+- 运行中的 rc.3 只读查询：`settings/describe` 正常，`qq-mode` = `reserved2`；`agentPresets/list` 含 qq-chat、qq-chat-v2、
+  qq-agent-readonly/workspace/full；默认模型 `deepseek-flash`；`session/modelCatalog` 正常。
+- `npm run test:audit` 71/72，和更新前一样（没过的 `test-console-encoding.mjs` 只在 Windows 上能通过）。
+
+### 现象
+
+- DSH 重启那一分钟，桥接日志会出现「连续多次连上 DSH 事件流后一帧都没收到」的提示：这是旧端口还没释放时的连接，
+  随后桥接按随机端口重新识别（`DSH 地址已变化，重新识别为 …（随机端口）`）并恢复，不是协议不匹配。
+
+### 没覆盖的
+
+- npm 上已经有 0.2.1-rc.4 / rc.5，没有核对。
+- 命令行版 rc.3 没有实测（它和桌面版用同一批包）。
