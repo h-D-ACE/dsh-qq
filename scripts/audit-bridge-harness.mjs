@@ -36,6 +36,8 @@ import * as defaultRolesLib from '../src/default-roles.js';
 import * as backfillLib from '../src/backfill.js';
 import * as rolePerKeyLib from '../src/role-per-key.js';
 import * as dshAuthHintLib from '../src/dsh-auth-hint.js';
+import * as ownerAccountLib from '../src/owner-account.js';
+import * as ttsCloudLib from '../src/tts-cloud.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
 import * as presetPrompt from '../src/preset-prompt.js';
@@ -44,7 +46,7 @@ import * as bridgeExt from '../src/bridge-extensions.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, botRequest = null } = {}) {
+export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, botRequest = null, botRaw = null } = {}) {
   // 取 realpath：macOS 默认的 /var/folders 是 /private/var/folders 的软链接，而语音库解析会返回 realpath（挡 symlink 逃逸），
   // 不先归一的话「库内路径」断言在真实 Mac 上会因为前缀不同而失败。
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-')));
@@ -122,6 +124,13 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
       return { base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+k3ioAAAAASUVORK5CYII=' };
     }
     async fetchFaceEntity(id) { calls.faces.push(id); return null; }
+    // bot.raw：任意 OneBot 动作（撤回、账号门面操作等）。botRaw 可按动作名模拟回执；默认回空对象。
+    async raw(action, params) {
+      calls.raw = calls.raw ?? [];
+      calls.raw.push({ action, params });
+      if (typeof botRaw === 'function') return botRaw(action, params);
+      return {};
+    }
     async request(action, params) {
       // botRequest：按动作名模拟网关回执（例如 NapCat 与 SnowLuma 对 add_custom_face 的不同行为）
       calls.requests = calls.requests ?? [];
@@ -178,7 +187,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
       selfUserId = String(id ?? '');
       selfNickname = selfDisplayName.toLowerCase() || 'deepseek';
     },
-    flushQueue, retireSession,
+    flushQueue, retireSession, accountPending, accountHistory, accountQuota, accountTurnTrigger, noteAccountTurnTrigger, tryHandleAccountReply, accountTriggerFor,
     ext, handleMemberNotice, reconcileGroupMembers, applyModeChange, sendOwnerDirect, tryHandleApprovalReply, initControllerOnce, looksLikeAdminChannelText,
     setLevel(value) { currentLevel = value; },
     getMode() { return { mode: currentMode, level: currentLevel }; },
@@ -207,7 +216,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     discoverDshLaunchToken: () => '', resolveDshHome: () => path.join(os.tmpdir(), 'qq-bridge-audit-no-dsh-home'), unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker, ...stickerLimits,
     ...modelPrices, ...dshModel, ...quoteForward, ...modeHandover, ...roleCard, ...tokenLedger,
-    createScheduler, parseRemindCommand, REMIND_HELP, formatTaskList, createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt, describeInstant, createSilenceSchedule, peakPresetRanges, describeRange, DIRECT_PASS_MS, ...roleRefreshLib, ...stickerDescribeLib, ...webImageLib, ...tokenGuardLib, ...promptBlocksLib, ...autoCompactLib, ...defaultRolesLib, ...backfillLib, ...rolePerKeyLib, ...dshAuthHintLib, ...voiceLib, ...stateAcl, ...presetPrompt, ...bridgeExt,
+    createScheduler, parseRemindCommand, REMIND_HELP, formatTaskList, createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt, describeInstant, createSilenceSchedule, peakPresetRanges, describeRange, DIRECT_PASS_MS, ...roleRefreshLib, ...stickerDescribeLib, ...webImageLib, ...tokenGuardLib, ...promptBlocksLib, ...autoCompactLib, ...defaultRolesLib, ...backfillLib, ...rolePerKeyLib, ...dshAuthHintLib, ...ownerAccountLib, ACCOUNT_LIMITS: ownerAccountLib.LIMITS, ...ttsCloudLib, ...voiceLib, ...stateAcl, ...presetPrompt, ...bridgeExt,
     // ACL 收紧会 spawn icacls 去改**真实**文件系统；测试不该做这件事（同理见下面的
     // cleanupTemp / processAudioVolume 桩）。桩成成功，让 hardenStateDirAcl 走正常分支。
     hardenDir: () => ({ ok: true, detail: 'stub' }),

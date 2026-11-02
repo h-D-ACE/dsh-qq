@@ -2279,11 +2279,50 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setStickerRemark"> <span><b>qq_set_sticker_remark</b><span class="meta">修改 QQ 官方表情备注（默认禁用，慎用）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendVoice"> <span><b>qq_send_voice / qq_list_voices</b><span class="meta">发送语音条（只能发语音库里的音频；偶然而为的强表达）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="webImage"> <span><b>qq_search_images / qq_preview_image / qq_send_web_image</b><span class="meta">搜图并发送（默认关）：只在管理员私聊里用，「找一张 xxx 的图发我」；必须先看图再发，搜索词会发给 Bing；改后重启 DSH 才会出现在工具列表</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="recall"> <span><b>qq_recall</b><span class="meta">撤回 AI 自己刚发的消息（默认关）：只能撤本会话里它自己发出去的，撤不了别人的；QQ 约 2 分钟内才能撤</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="qzonePost"> <span><b>qq_qzone_post / qq_qzone_delete</b><span class="meta">发说说 / 删说说（默认关）：只在管理员私聊里能用，确认方式见下面「账号门面操作」</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="qzoneComment"> <span><b>qq_qzone_comment</b><span class="meta">评论说说（默认关）：⚠️ 空间评论发出后删不掉，只能你在手机上删</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="qzoneLike"> <span><b>qq_qzone_like</b><span class="meta">点赞 / 取消赞（默认关，只在管理员私聊里）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="qzoneRead"> <span><b>qq_qzone_list / qq_qzone_feeds / qq_my_profile</b><span class="meta">读自己的说说、空间动态、自己的资料（只读，默认关，只在管理员私聊里）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setSignature"> <span><b>qq_set_signature</b><span class="meta">改个性签名（默认关）：改之前存下旧签名，可在下面一键改回</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setNickname"> <span><b>qq_set_nickname</b><span class="meta">改昵称（默认关）：改之前存下旧昵称，可在下面一键改回</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setOnlineStatus"> <span><b>qq_set_online_status</b><span class="meta">改在线状态（默认关，只在管理员私聊里）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setInputStatus"> <span><b>qq_set_input_status</b><span class="meta">在管理员私聊里显示「正在输入」（默认关）</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="speak"> <span><b>qq_speak</b><span class="meta">云语音（默认关）：⚠️ 要念的文字会发给微软的服务器；需要本机装 edge-tts ≥ 7.3（python -m pip install --upgrade edge-tts）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="schedule"> <span><b>qq_schedule_create / list / update / delete</b><span class="meta">定时任务：只在管理员私聊里能用，AI 替你登记提醒、到点由桥接执行；默认只能发给你，登记后桥接另发确认（详见「定时任务」页面）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="handoverMemory"> <span><b>切到 agent 时带上私聊长期记忆</b><span class="meta">不是工具：切到 agent L1～L3 时，把二代仿真里 AI 在管理员私聊记下的话题、想说的话、印象一并交接给 agent（只取管理员私聊的，不含任何群；已脱敏）。关掉后只交接最近的私聊往来</span></span></label>
       </div>
       <div class="meta" style="margin-top:6px">二代黑话学习：AI 可用 <code>qq_slang_submit</code> 提交陌生词，也可由桥接自动提取；管理员在「黑话词库」页面筛选确认后，词条会自动写入黑话提示词并注入 <code>qq_get_prompt</code> 与后续唤醒。</div>
 
+      </div></details>
+<details class="settings-group" id="accountGroup"><summary>账号门面操作（发说说 / 改签名 / 改昵称）</summary><div class="settings-content">
+      <div class="meta" style="margin-bottom:8px">
+        这些操作只在<b>管理员本人的私聊</b>里能用：桥接按会话令牌认人，群里谁叫 AI 做都会被拒，这一条没有开关。
+        下面的「需要确认」决定 AI 要做时，是否先私聊给你发预览、等你回复「确认 6 位码」。<br>
+        <b>你叫它做</b> = 这次是你在私聊里发消息把它叫醒的；<b>它主动做</b> = 定时、主动冒泡、补收消息等其它情况（由桥接判断，AI 改不了）。工具本身的开关在上面的工具列表里。
+      </div>
+      <div id="accountConfirmTable" class="meta">打开本组时加载…</div>
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">
+        <label style="flex:0 0 auto">说说和签名用的人格</label>
+        <select id="accountPersona" style="flex:0 1 260px"></select>
+        <span class="meta" id="accountPersonaNote"></span>
+      </div>
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">
+        <label style="flex:0 0 auto">每天最多：说说</label><input type="number" id="accountLimitPost" min="0" max="100" style="width:64px">
+        <label style="flex:0 0 auto">评论</label><input type="number" id="accountLimitComment" min="0" max="100" style="width:64px">
+        <label style="flex:0 0 auto">点赞</label><input type="number" id="accountLimitLike" min="0" max="100" style="width:64px">
+        <label style="flex:0 0 auto">签名</label><input type="number" id="accountLimitSignature" min="0" max="100" style="width:64px">
+        <label style="flex:0 0 auto">昵称</label><input type="number" id="accountLimitNickname" min="0" max="100" style="width:64px">
+        <label style="flex:0 0 auto">删说说</label><input type="number" id="accountLimitDeletePost" min="0" max="100" style="width:64px">
+      </div>
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">
+        <label style="flex:0 0 auto">评论发出前等待（秒，0 = 不等）</label><input type="number" id="accountCommentDelay" min="0" max="600" style="width:72px">
+        <label style="flex:0 0 auto"><input type="checkbox" id="accountAllowPublic" style="width:auto"> 允许发「所有人可见」的说说</label>
+        <button id="accountSave" type="button">保存账号门面设置</button>
+        <span id="accountMsg" class="meta"></span>
+      </div>
+      <div class="meta" style="margin-top:10px"><b>最近的操作</b>（签名 / 昵称可一键改回修改之前的值）</div>
+      <div id="accountHistory" class="meta" style="margin-top:4px"></div>
       </div></details>
 <details class="settings-group"><summary>语音库与语音发送（调试）</summary><div class="settings-content">
       <div class="meta" style="margin-bottom:8px">
@@ -6317,6 +6356,62 @@ setInterval(() => { if (currentConsolePage !== 'usage') return; refreshUsage(); 
     if (!stored()) apply(event.matches ? 'dark' : 'light', false);
   });
 })();
+
+// ── 账号门面操作（PR #4）：确认开关、门面人格、额度、记录 ──────────────────────────
+const ACCOUNT_CONFIRM_ROWS = [['post', '发说说'], ['comment', '评论'], ['signature', '改签名'], ['nickname', '改昵称'], ['deletePost', '删说说']];
+const ACCOUNT_ACTION_LABEL = { post: '发说说', deletePost: '删说说', comment: '评论', like: '点赞', signature: '改签名', nickname: '改昵称' };
+async function loadAccount() {
+  const r = await api('/api/account', 'GET');
+  if (!r.ok) { document.getElementById('accountConfirmTable').textContent = '加载失败：' + (r.error || ''); return; }
+  const c = r.config;
+  document.getElementById('accountConfirmTable').innerHTML = '<table class="data-table"><tr><th>操作</th><th>你叫它做时需要确认</th><th>它主动做时需要确认</th></tr>'
+    + ACCOUNT_CONFIRM_ROWS.map(([a, label]) => `<tr><td>${esc(label)}</td><td><input type="checkbox" data-account-confirm="${a}:owner" ${c.confirm[a]?.owner !== false ? 'checked' : ''} style="width:auto"></td><td><input type="checkbox" data-account-confirm="${a}:proactive" ${c.confirm[a]?.proactive !== false ? 'checked' : ''} style="width:auto"></td></tr>`).join('')
+    + '</table>' + (r.ownerQQ ? '' : '<div class="meta err">config.json 没有配置 ownerQQ：这些操作都用不了。</div>');
+  const sel = document.getElementById('accountPersona');
+  const opts = [['follow', `跟私聊（现在是：${r.privateRole || '不挂卡'}）`], ['global', `跟全局默认（现在是：${r.globalRole || '不挂卡'}）`], ...(r.roles || []).map((n) => [n, n])];
+  if (!['follow', 'global', ...(r.roles || [])].includes(c.persona)) opts.push([c.persona, c.persona + '（文件不存在）']);
+  sel.innerHTML = opts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('');
+  sel.value = c.persona;
+  document.getElementById('accountPersonaNote').textContent = '选的卡和私聊不同时，说说、评论、签名、昵称会先按这张卡改写（多一次 AI 调用）；确认预览里会同时列出原稿。';
+  for (const [id, k] of [['accountLimitPost', 'post'], ['accountLimitComment', 'comment'], ['accountLimitLike', 'like'], ['accountLimitSignature', 'signature'], ['accountLimitNickname', 'nickname'], ['accountLimitDeletePost', 'deletePost']]) document.getElementById(id).value = c.limits[k];
+  document.getElementById('accountCommentDelay').value = c.commentDelaySeconds;
+  document.getElementById('accountAllowPublic').checked = c.allowPublic !== false;
+  const h = r.history || [];
+  document.getElementById('accountHistory').innerHTML = h.length ? h.map((it) => {
+    const when = new Date(it.at).toLocaleString();
+    const restore = it.restorable && it.previous != null && !it.restoredAt ? ` <button type="button" class="small" data-account-restore="${it.id}">改回「${esc(String(it.previous).slice(0, 30))}」</button>` : (it.restoredAt ? ' <span class="pill">已改回</span>' : '');
+    return `<div>${esc(when)} · ${esc(ACCOUNT_ACTION_LABEL[it.action] || it.action)} · ${esc(it.via || '')}${it.trigger === 'proactive' ? '（AI 主动）' : ''}${it.text ? '：' + esc(String(it.text).slice(0, 80)) : ''}${it.target ? ` · 对象 ${esc(it.target)}` : ''}${restore}</div>`;
+  }).join('') : '还没有操作记录。';
+}
+document.getElementById('accountGroup')?.addEventListener('toggle', (e) => { if (e.target.open) loadAccount(); });
+document.getElementById('accountHistory')?.addEventListener('click', async (e) => {
+  const id = e.target?.dataset?.accountRestore;
+  if (!id) return;
+  if (!confirm('把它改回修改之前的值？')) return;
+  const r = await api('/api/account/restore', 'POST', { id: Number(id) });
+  document.getElementById('accountMsg').textContent = r.ok ? '✅ 已改回' : '❌ ' + (r.error || '改回失败');
+  loadAccount();
+});
+document.getElementById('accountSave')?.addEventListener('click', async () => {
+  const confirm = {};
+  document.querySelectorAll('[data-account-confirm]').forEach((el) => {
+    const [a, who] = el.dataset.accountConfirm.split(':');
+    confirm[a] = { ...(confirm[a] || {}), [who]: el.checked };
+  });
+  const num = (id) => Number(document.getElementById(id).value);
+  const body = {
+    confirm,
+    persona: document.getElementById('accountPersona').value,
+    limits: { post: num('accountLimitPost'), comment: num('accountLimitComment'), like: num('accountLimitLike'), signature: num('accountLimitSignature'), nickname: num('accountLimitNickname'), deletePost: num('accountLimitDeletePost') },
+    commentDelaySeconds: num('accountCommentDelay'),
+    allowPublic: document.getElementById('accountAllowPublic').checked,
+  };
+  const r = await api('/api/account/config', 'POST', body);
+  const m = document.getElementById('accountMsg');
+  m.textContent = r.ok ? '✅ 已保存' : '❌ ' + (r.error || '保存失败');
+  m.className = r.ok ? 'meta ok' : 'meta err';
+  if (r.ok) loadAccount();
+});
 </script>
 </body>
 </html>

@@ -621,6 +621,7 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           });
           case '/api/slang': return json({ ok: true, entries: state.slang, config: state.slangConfig });
           case '/api/compact/config': return json({ ok: true, mode: state.compactMode || 'early', thresholdTokens: state.compactThreshold || 300000, cooldownMinutes: 120, min: 50000, max: 800000, dshApprox: 800000, sessions: [{ key: 'group:10001', inputTokens: 680000, lastAttemptAt: null }, { key: 'group:10002', inputTokens: 120000, lastAttemptAt: null }] });
+          case '/api/account': return json({ ok: true, config: state.accountConfig || { persona: 'follow', confirm: { post: { owner: true, proactive: true }, comment: { owner: true, proactive: true }, signature: { owner: false, proactive: true }, nickname: { owner: true, proactive: true }, deletePost: { owner: true, proactive: true } }, limits: { post: 3, deletePost: 10, comment: 5, like: 30, signature: 5, nickname: 3 }, commentDelaySeconds: 120, confirmTtlSeconds: 600, allowPublic: true, defaultUgcRight: 4 }, tools: {}, quota: { day: '2026-11-01', counts: { signature: 1 } }, pending: [], history: [{ id: 2, at: Date.now() - 600000, action: 'signature', via: '免确认', trigger: 'owner', text: '今天也要好好摸鱼', previous: '在吗', restorable: true }, { id: 1, at: Date.now() - 3600000, action: 'post', via: '管理员确认', trigger: 'proactive', text: '下雨天适合睡觉' }], roles: ['傲娇助手', '小鲸鱼'], privateRole: '小鲸鱼', globalRole: '小鲸鱼', ownerQQ: true });
           case '/api/roles/defaults': return json({ ok: true, current: '小鲸鱼', defaults: [{ name: '傲娇助手', exists: !!state.restoredTsundere, modified: false }, { name: '小鲸鱼', exists: true, modified: !state.restoredWhale }] });
           case '/api/stickers/describe': return json({ ok: true, total: 21, undescribed: state.stickerDescribed ? 0 : 10, running: false, progress: { done: 0, total: 0 }, last: state.stickerDescribed ? { ok: true, text: '补好 10 张，其中 2 张偏凶或带粗口，已标「慎用」，所有表情都有说明了' } : null, blocker: '', model: 'deepseek-flash', max: 20 });
           // state/ 的 ACL 收紧结果：用离线示例值演示「未收紧」的告警条（Windows 上未提权时的真实情况）
@@ -649,6 +650,8 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             state.compactMode = body.mode; if (body.mode === 'early') state.compactThreshold = Number(body.thresholdWan) * 10000;
             return json({ ok: true, mode: body.mode, thresholdTokens: state.compactThreshold || 300000 });
           }
+          case '/api/account/config': { state.accountConfig = { ...(state.accountConfig || {}), ...body, confirmTtlSeconds: 600, defaultUgcRight: 4 }; return json({ ok: true, config: state.accountConfig }); }
+          case '/api/account/restore': return json({ ok: true });
           case '/api/roles/assign': {
             if (!/^(group|private):[1-9]\d*$/.test(String(body.key ?? ''))) return json({ ok: false, error: '会话格式应为 group:群号 或 private:QQ号' }, 400);
             if (body.use === 'default') delete state.roleByKey[body.key];

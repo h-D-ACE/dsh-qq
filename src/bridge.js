@@ -54,6 +54,8 @@ import { createScheduledNoteStore, scheduledPromptBlock, scheduledDirectPrompt }
 import { describeInstant } from './scheduler/time.js';
 import { createSilenceSchedule, peakPresetRanges, describeRange, DIRECT_PASS_MS } from './silence-schedule.js';
 import { defaultRoleStatus, restoreDefaultRole } from './default-roles.js';
+import { ACCOUNT_ACTIONS, ACCOUNT_TOOL_NAMES, normalizeAccountConfig, needsConfirm, validateAccountAction, withRewrittenText, actionText, onebotCallFor, describeAction, buildConfirmText, parseAccountReply, createPendingRegistry, createAccountQuota, createAccountHistory, resolveAccountPersona, buildRewritePrompt, cleanRewriteOutput, LIMITS as ACCOUNT_LIMITS } from './owner-account.js';
+import { synthesizeSpeech, MAX_SPEAK_CHARS } from './tts-cloud.js';
 import { normalizeRoleState, serializeRoleState, roleNameFor, roleSourceFor, withRoleForKey, renameRoleEverywhere, removeRoleEverywhere, roleInUse, roleAssignments, resolveRoleFile, canonicalConversationKey } from './role-per-key.js';
 import { normalizeBackfillConfig, createUpstreamGapTracker, createSeenMessageIds, selectBackfill, describeDuration, backfillNoticeBlock } from './backfill.js';
 import { createRoleRefreshTracker, roleFingerprint, buildRoleRefreshBlock, normalizeApplyMode } from './role-refresh.js';
@@ -129,6 +131,9 @@ const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
 const INITIAL_PROMPTS_FILE = path.join(STATE_DIR, 'initial-prompts.json');
 const STICKER_FILE = path.join(STATE_DIR, 'stickers.json');
 const STICKER_DESCRIBE_SESSION_FILE = path.join(STATE_DIR, 'sticker-describe-session.json');
+const ACCOUNT_WRITER_SESSION_FILE = path.join(STATE_DIR, 'account-writer-session.json');
+const ACCOUNT_QUOTA_FILE = path.join(STATE_DIR, 'account-quota.json');
+const ACCOUNT_HISTORY_FILE = path.join(STATE_DIR, 'account-history.json');
 const FEEDBACK_FILE = path.join(STATE_DIR, 'feedback.json');
 const TOOL_LOG_FILE = path.join(STATE_DIR, 'tool-calls.jsonl');
 const TOKEN_USAGE_FILE = path.join(STATE_DIR, 'token-usage.jsonl');
@@ -838,7 +843,7 @@ function loadConfig() {
         getImages: true,
         getForwardMsg: true,
         sendPoke: true,
-        recall: true,              // 撤回自己发的消息（sendMessage 之外的新能力）
+        recall: false,             // 撤回自己发的消息（PR #4；默认关闭）
         listStickers: true,
         getStickerImage: true,
         sendSticker: true,
@@ -853,7 +858,17 @@ function loadConfig() {
         handoverMemory: true,
         ownerRelay: false,
         webImage: false,          // 管理员私聊里搜图并发送（默认关闭）
-        ownerGroupAccess: false   // 管理员私聊只读查看白名单群 + 给群设长期规则（默认关闭）
+        ownerGroupAccess: false,  // 管理员私聊只读查看白名单群 + 给群设长期规则（默认关闭）
+        // PR #4：管理员私聊里的账号门面操作（src/owner-account.js），全部默认关闭
+        qzonePost: false,
+        qzoneComment: false,
+        qzoneLike: false,
+        qzoneRead: false,
+        setSignature: false,
+        setNickname: false,
+        setOnlineStatus: false,
+        setInputStatus: false,
+        speak: false              // 云 TTS（Edge TTS，要念的文字会发给微软；默认关闭）
       },
       wake: {
         defaultMode: 'diving',
@@ -995,6 +1010,17 @@ function loadConfig() {
     ownerGroupAccess: false,
     // 管理员私聊里搜图并发送（qq_search_images / qq_preview_image / qq_send_web_image，默认关闭）
     webImage: false,
+    // PR #4：撤回自己的消息、管理员私聊里的账号门面操作、云 TTS（全部默认关闭）
+    recall: false,
+    qzonePost: false,
+    qzoneComment: false,
+    qzoneLike: false,
+    qzoneRead: false,
+    setSignature: false,
+    setNickname: false,
+    setOnlineStatus: false,
+    setInputStatus: false,
+    speak: false,
     ...(cfg.socialV2.tools ?? {})
   };
 
@@ -2334,6 +2360,221 @@ async function main() {
     atomicWriteJson(SLANG_SESSION_FILE, { sessionId: slangLearnerSessionId, preset });
     log(`黑话学习会话已创建：${slangLearnerSessionId}`);
     return slangLearnerSessionId;
+  }
+
+  // ── 管理员私聊里的账号门面操作（PR #4；纯逻辑在 src/owner-account.js）────────────────────────────
+  // 认人：/api/socialV2/account 用会话令牌确定真实会话，只放行管理员本人的私聊（不看模型填的 key 是谁）。
+  // 确认：发说说 / 删说说 / 评论 / 改签名 / 改昵称默认要管理员回复「确认 <6 位码>」，由 handleIncoming 在交给模型之前拦截。
+  // 「你叫它做」：这次唤醒由管理员本人的实时消息触发（不是定时、主动冒泡、补收），由桥接在发唤醒时记下，模型改不了。
+  const accountPending = createPendingRegistry({ maxPending: 5 });
+  const accountQuota = createAccountQuota({
+    file: ACCOUNT_QUOTA_FILE,
+    dayOf: (ms) => {
+      let tz = 'Asia/Shanghai';
+      try { tz = scheduler.snapshot().settings.timezone || tz; } catch {}
+      return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+    },
+    onError: (e) => log('账号操作额度写盘失败:', e?.message ?? e),
+  });
+  const accountHistory = createAccountHistory({ file: ACCOUNT_HISTORY_FILE, onError: (e) => log('账号操作记录写盘失败:', e?.message ?? e) });
+  /** key → { sessionId, owner, at }：这一轮唤醒是不是管理员本人的实时消息触发的。 */
+  const accountTurnTrigger = new Map();
+  const accountCfg = () => normalizeAccountConfig(cfg.socialV2?.account);
+
+  function noteAccountTurnTrigger(key, reason, st) {
+    if (!ext.isOwnerPrivateKey(key)) return;
+    const owner = reason === 'private' && Array.isArray(st?.unread)
+      && st.unread.some((m) => m && m.isOwner && !m.backfill);
+    accountTurnTrigger.set(key, { sessionId: state.sessions[key] ?? null, owner, at: Date.now() });
+  }
+
+  function accountTriggerFor(key) {
+    const t = accountTurnTrigger.get(key);
+    return t && t.owner && t.sessionId && t.sessionId === state.sessions[key] ? 'owner' : 'proactive';
+  }
+
+  let accountWriterSessionId = null;
+  async function ensureAccountWriterSession() {
+    const preset = resolvePresetName(cfg.slang?.learnerPreset || cfg.agentPreset, { strict: true });
+    if (!preset) throw new Error('缺少已验证的安全 preset，拒绝创建写作会话');
+    const saved = readJsonSafe(ACCOUNT_WRITER_SESSION_FILE, null);
+    if (accountWriterSessionId && saved?.preset === preset) {
+      learnerSessions.add(accountWriterSessionId);
+      api.events.follow(accountWriterSessionId);
+      return accountWriterSessionId;
+    }
+    if (saved?.sessionId && saved.preset === preset) {
+      accountWriterSessionId = String(saved.sessionId);
+    } else {
+      const dir = path.join(STATE_DIR, 'account-writer');
+      fs.mkdirSync(dir, { recursive: true });
+      const wsValue = unwrap(await api.workspace.create({ path: dir }), 'account-writer workspace.create');
+      if (wsValue.created) {
+        try { await api.workspace.rename({ workspaceId: wsValue.workspace.workspaceId, title: 'QQ 门面写作' }); } catch {}
+      }
+      const value = unwrap(await api.sessions.create({ workspaceId: wsValue.workspace.workspaceId, agentPreset: preset }), 'account-writer session.create');
+      accountWriterSessionId = value.sessionId;
+      atomicWriteJson(ACCOUNT_WRITER_SESSION_FILE, { sessionId: accountWriterSessionId, preset });
+      log(`门面写作会话已创建：${accountWriterSessionId}`);
+    }
+    learnerSessions.add(accountWriterSessionId);
+    api.events.follow(accountWriterSessionId);
+    await ensureChatModel(accountWriterSessionId);
+    return accountWriterSessionId;
+  }
+
+  function readRoleCardByName(name) {
+    const file = resolveRoleFile(ROLES_DIR, name);
+    if (!file) return null;
+    try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+  }
+
+  /** 按「账号门面人格」改写正文；不需要改写或改写失败时返回 null（用原稿）。 */
+  async function rewriteForAccount(key, action, draft) {
+    const acct = accountCfg();
+    const roleName = resolveAccountPersona(acct.persona, { privateRole: roleNameForKey(key), globalRole: readRoleState().role });
+    if (!roleName) return null;
+    const card = readRoleCardByName(roleName);
+    if (!card) { log(`账号门面人格「${roleName}」的人格卡不存在，用原稿`); return null; }
+    const maxChars = { post: ACCOUNT_LIMITS.postChars, comment: ACCOUNT_LIMITS.commentChars, signature: ACCOUNT_LIMITS.signatureChars, nickname: ACCOUNT_LIMITS.nicknameChars }[action];
+    try {
+      const sessionId = await ensureAccountWriterSession();
+      const content = [{ type: 'text', text: buildRewritePrompt({ action, draft, card, roleName, maxChars }) }];
+      const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content });
+      if (!accepted?.result?.ok) throw new Error(accepted?.result?.error?.message ?? '写作会话没有接受请求');
+      const out = cleanRewriteOutput(await waitLearnerTurn(sessionId, 90000), maxChars);
+      if (!out) { log(`门面写作会话的输出为空或超长，用原稿（${key} ${action}）`); return null; }
+      return { text: out, roleName };
+    } catch (error) {
+      if (/会话|session|not found|404/i.test(String(error?.message ?? ''))) {
+        accountWriterSessionId = null;
+        try { fs.unlinkSync(ACCOUNT_WRITER_SESSION_FILE); } catch {}
+      }
+      log(`门面改写失败，用原稿（${key} ${action}）：${error?.message ?? error}`);
+      return null;
+    }
+  }
+
+  /** 对外发布的正文审计：和聊天回复同一条规则（路径 / 凭据 / 会话令牌）。 */
+  function accountTextBlocked(text) {
+    const t = String(text ?? '');
+    return SENSITIVE_RE.test(t) || [...KNOWN_AGENT_TOKENS].some((tok) => tok && t.includes(tok));
+  }
+
+  async function accountSelfInfo() {
+    let uid = selfUserId;
+    if (!uid) { try { uid = (await bot.raw('get_login_info', {}))?.user_id; } catch {} }
+    if (!uid) return null;
+    try { return { uid: String(uid), info: await bot.raw('get_stranger_info', { user_id: Number(uid), no_cache: true }) }; } catch { return { uid: String(uid), info: null }; }
+  }
+
+  /** 真正执行（额度在这里再查一次、执行成功才记一次）。返回给模型 / 控制台的结果对象。 */
+  async function executeAccountAction(key, action, params, { trigger, via, draft = null, roleName = null } = {}) {
+    const spec = ACCOUNT_ACTIONS[action];
+    const acct = accountCfg();
+    if (spec.quota && !accountQuota.allowed(spec.quota, acct.limits[spec.quota] ?? 0)) {
+      throw new Error(`今天的额度用完了（${spec.label}每天最多 ${acct.limits[spec.quota] ?? 0} 次）`);
+    }
+    if (action === 'profile') {
+      const me = await accountSelfInfo();
+      const d = me?.info ?? {};
+      return { uin: me?.uid ?? null, nickname: d.nick ?? d.nickname ?? '', signature: d.longNick ?? d.long_nick ?? '', qqLevel: d.qqLevel ?? null };
+    }
+    let previous = null;
+    if (action === 'signature' || action === 'nickname') {
+      const d = (await accountSelfInfo())?.info ?? {};
+      previous = action === 'signature' ? (d.longNick ?? d.long_nick ?? null) : (d.nick ?? d.nickname ?? null);
+    }
+    const call = onebotCallFor(action, params, { ownerQQ: cfg.ownerQQ });
+    const data = await bot.raw(call[0], call[1]);
+    if (spec.quota) accountQuota.bump(spec.quota);
+    if (action === 'list') {
+      return { total: data?.total ?? null, items: (data?.msglist ?? []).slice(0, params.limit).map((m) => ({ tid: m.tid, content: m.content, time: m.time ? new Date(m.time * 1000).toISOString() : '', comments: m.comment_num ?? 0, images: (m.images ?? []).length })) };
+    }
+    if (action === 'feeds') {
+      return (data?.feeds ?? []).slice(0, params.limit).map((f) => ({ uin: f.uin, nickname: f.nickname, time: f.time ? new Date(f.time * 1000).toISOString() : '', tid: f.key ?? f.tid ?? null }));
+    }
+    if (spec.confirmable || action === 'like') {
+      accountHistory.add({ action, key, trigger, via, text: actionText(action, params) || null, draft: draft && draft !== actionText(action, params) ? draft : null, roleName, tid: params.tid ?? data?.tid ?? null, target: params.target_uin ?? null, previous, restorable: previous != null && (action === 'signature' || previous !== '') });
+      log(`[账号] ${spec.label}（${via}）：${describeAction(action, params).slice(0, 80)}`);
+      appendActivity(`[账号] ${spec.label}（${trigger === 'owner' ? '管理员要求' : 'AI 主动'}，${via}）`);
+    }
+    return { done: true, action, tid: data?.tid ?? params.tid ?? null };
+  }
+
+  /** 评论有撤销窗口：先登记，到点再发；期间管理员回「撤销 <码>」取消。 */
+  function holdComment(key, params, meta) {
+    const delay = accountCfg().commentDelaySeconds;
+    if (!delay) return null;
+    const code = accountPending.newCode();
+    const timer = setTimeout(async () => {
+      if (!accountPending.release(code)) return;
+      try {
+        await executeAccountAction(key, 'comment', params, meta);
+        await sendOwnerDirect(`【账号操作】评论已发出（${params.target_uin} 的说说）：${params.content}`);
+      } catch (error) {
+        log(`[账号] 评论发出失败：${error?.message ?? error}`);
+        await sendOwnerDirect(`【账号操作】评论没有发出：${error?.message ?? error}`).catch(() => {});
+      }
+    }, delay * 1000);
+    timer.unref?.();
+    accountPending.hold(code, { key, action: 'comment', params, meta }, timer);
+    return { code, delay };
+  }
+
+  /** 管理员私聊里的「确认 / 取消 / 撤销 <6 位码>」。只处理本模块发出的码；返回 true 表示已处理（不交给模型）。 */
+  async function tryHandleAccountReply(text) {
+    const r = parseAccountReply(text);
+    if (!r || !accountPending.has(r.code)) return false;
+    if (r.verb === 'undo') {
+      const it = accountPending.undo(r.code);
+      if (!it) return false;
+      clearTimeout(it.timer);
+      await sendOwnerDirect(`【账号操作】已撤销，这条评论不会发出：${it.params.content}`);
+      return true;
+    }
+    const it = accountPending.takeForConfirm(r.code);
+    if (!it) {
+      if (r.verb === 'cancel' && accountPending.undo(r.code)) { await sendOwnerDirect('【账号操作】已撤销。'); return true; }
+      return false;
+    }
+    if (r.verb === 'cancel') {
+      await sendOwnerDirect(`【账号操作】已取消：${describeAction(it.action, it.params).slice(0, 80)}`);
+      return true;
+    }
+    const meta = { trigger: it.trigger, via: '管理员确认', draft: it.draft, roleName: it.roleName };
+    try {
+      if (it.action === 'comment') {
+        const held = holdComment(it.key, it.params, meta);
+        if (held) {
+          await sendOwnerDirect(`【账号操作】${held.delay} 秒后发出这条评论；想反悔请回复「撤销 ${held.code}」。`);
+          return true;
+        }
+      }
+      await executeAccountAction(it.key, it.action, it.params, meta);
+      await sendOwnerDirect(`【账号操作】已完成：${describeAction(it.action, it.params).slice(0, 120)}`);
+    } catch (error) {
+      await sendOwnerDirect(`【账号操作】没有完成：${error?.message ?? error}`);
+    }
+    return true;
+  }
+
+  /** 控制台「改回」：把签名 / 昵称恢复成某次修改之前的值。 */
+  async function restoreAccountHistory(id) {
+    const it = accountHistory.get(id);
+    if (!it || !it.restorable || it.previous == null) throw new Error('这条记录没有可恢复的旧值');
+    const action = it.action;
+    // 签名原本就是空的很常见：改回空签名是合法的恢复，不走「签名不能为空」那条（那条是管 AI 的）
+    const v = action === 'signature' && String(it.previous) === ''
+      ? { ok: true, params: { signature: '' } }
+      : validateAccountAction(action, action === 'signature' ? { signature: it.previous } : { nickname: it.previous }, accountCfg());
+    if (!v.ok) throw new Error(`旧值无法恢复：${v.error}`);
+    const call = onebotCallFor(action, v.params, { ownerQQ: cfg.ownerQQ });
+    await bot.raw(call[0], call[1]);
+    accountHistory.update(it.id, { restoredAt: Date.now() });
+    accountHistory.add({ action, key: it.key, trigger: 'console', via: '控制台改回', text: it.previous, previous: it.text, restorable: true });
+    log(`[账号] 控制台把${ACCOUNT_ACTIONS[action].label.replace('改', '')}改回：${String(it.previous).slice(0, 40)}`);
+    return { ok: true, action, value: it.previous };
   }
 
   // ── 一键补表情说明（逻辑在 src/sticker-describe.js）：专用看图会话，和黑话研究同一个安全 preset ─────────
@@ -5668,7 +5909,7 @@ async function main() {
             merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
           }
           // tools：只接受布尔开关
-          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'personProfile', 'requestMode', 'crossGroup', 'ownerRelay', 'ownerGroupAccess', 'webImage', 'sendVoice'];
+          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'personProfile', 'requestMode', 'crossGroup', 'ownerRelay', 'ownerGroupAccess', 'webImage', 'recall', 'qzonePost', 'qzoneComment', 'qzoneLike', 'qzoneRead', 'setSignature', 'setNickname', 'setOnlineStatus', 'setInputStatus', 'speak', 'sendVoice'];
           if (body.tools && typeof body.tools === 'object') {
             merged.tools = { ...(current.tools ?? {}), ...body.tools };
             for (const k of toolFlags) {
@@ -5947,13 +6188,19 @@ async function main() {
             schedule: 'qq_schedule_create / qq_schedule_list / qq_schedule_update / qq_schedule_delete',
             ownerRelay: 'qq_ask_group_session',
             webImage: 'qq_search_images / qq_preview_image / qq_send_web_image',
-            ownerGroupAccess: 'qq_owner_peek_group / qq_owner_group_rule'
+            ownerGroupAccess: 'qq_owner_peek_group / qq_owner_group_rule',
+            recall: 'qq_recall',
+            speak: 'qq_speak'
           };
           const tools = cfg.socialV2?.tools ?? {};
           const stickerToolFlags = new Set(['listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker']);
           const enabledTools = [];
           for (const [flag, name] of Object.entries(toolMap)) {
             if (tools[flag] !== false && !(stickerToolFlags.has(flag) && !stickerEnabled())) enabledTools.push(name);
+          }
+          // 账号门面工具只在管理员私聊里出现（别的会话调了也会被桥接拒绝）
+          if (ext.isOwnerPrivateKey(key)) {
+            for (const [flag, name] of Object.entries(ACCOUNT_TOOL_NAMES)) if (tools[flag] === true) enabledTools.push(name);
           }
           sendJson({
             ok: true,
@@ -6724,6 +6971,108 @@ async function main() {
             if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
             log(`[reserved2] 工具拍一拍失败 ${key}:`, error?.message ?? error);
             sendJson({ ok: false, error: `拍一拍失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
+          }
+          return;
+        }
+        // ── 账号门面操作（PR #4，见 src/owner-account.js 与上面的 executeAccountAction）──────────────
+        // 认人只看会话令牌：令牌属于哪个会话，就是哪个会话；只有管理员本人的私聊会话能用。
+        // 模型在 key 里写什么都没用——群聊会话拿的是群的令牌，agentTokenOk(管理员私聊 key, 群令牌) 一定失败。
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/account') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const action = String(body.action ?? '').trim();
+          const token = String(req.headers['x-agent-token'] ?? '').trim();
+          const spec = Object.prototype.hasOwnProperty.call(ACCOUNT_ACTIONS, action) ? ACCOUNT_ACTIONS[action] : null;
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅二代仿真模式可用' }, 403); return; }
+          if (!token || !agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (!spec) { sendJson({ ok: false, error: '未知的账号操作' }, 400); return; }
+          if (cfg.socialV2?.tools?.[spec.flag] !== true) { sendJson({ ok: false, error: `工具未启用（socialV2.tools.${spec.flag}）` }, 403); return; }
+          if (!ext.isOwnerPrivateKey(key)) {
+            ext.audit.append('account.denied', { key, action });
+            sendJson({ ok: false, error: '账号操作只能在管理员本人的私聊里用；其它会话里谁要求都不行' }, 403);
+            return;
+          }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (socialV2.paused) { sendJson({ ok: false, error: '二代仿真已暂停' }, 403); return; }
+          const acct = accountCfg();
+          const v = validateAccountAction(action, body.params ?? {}, acct);
+          if (!v.ok) { sendJson({ ok: false, error: v.error }, 400); return; }
+          if (spec.quota && !accountQuota.allowed(spec.quota, acct.limits[spec.quota] ?? 0)) {
+            sendJson({ ok: false, error: `今天的额度用完了（${spec.label}每天最多 ${acct.limits[spec.quota] ?? 0} 次）` }, 429);
+            return;
+          }
+          const trigger = accountTriggerFor(key);
+          try {
+            let params = v.params;
+            let draft = null;
+            let roleName = null;
+            if (spec.rewrite) {
+              const rw = await rewriteForAccount(key, action, v.text);
+              if (rw) { draft = v.text; roleName = rw.roleName; params = withRewrittenText(action, params, rw.text); }
+            }
+            const text = actionText(action, params);
+            if (text && (accountTextBlocked(text) || (draft && accountTextBlocked(draft)))) {
+              log(`⚠️ 账号操作被安全策略拦截 (${key} ${action})：正文疑似含敏感信息`);
+              appendActivity(`${key} [账号] ${spec.label}被拦截（正文疑似敏感信息）`);
+              sendJson({ ok: false, error: '正文疑似包含敏感信息（路径/凭据/会话令牌），已阻止' }, 403);
+              return;
+            }
+            if (needsConfirm(action, trigger, acct)) {
+              if (!ext.adminEnabled()) { sendJson({ ok: false, error: '管理通道已关闭（admin.enabled=false），收不到管理员的确认；请在控制台把这个操作设成免确认，或打开管理通道' }, 403); return; }
+              const code = accountPending.add({ key, action, params, trigger, draft, roleName }, acct.confirmTtlSeconds * 1000);
+              await sendOwnerDirect(buildConfirmText({ action, params, code, ttlSeconds: acct.confirmTtlSeconds, trigger, draft }));
+              appendActivity(`${key} [账号] ${spec.label}等待管理员确认（${trigger === 'owner' ? '管理员要求' : 'AI 主动'}）`);
+              // 不把确认码告诉模型：确认只能由管理员本人在 QQ 里回复
+              sendJson({ ok: true, pending: true, note: `已把预览发给管理员，等他回复确认后才会${spec.label}。现在还没有完成，不要说已经${spec.label}。` });
+              return;
+            }
+            const meta = { trigger, via: '免确认', draft, roleName };
+            if (action === 'comment') {
+              const held = holdComment(key, params, meta);
+              if (held) {
+                await sendOwnerDirect(`【账号操作】AI 要评论（${params.target_uin} 的说说）：${params.content}\n${held.delay} 秒后发出；想拦下请回复「撤销 ${held.code}」。`);
+                sendJson({ ok: true, scheduled: true, note: `评论会在 ${held.delay} 秒后发出，管理员可以在这之前撤销。` });
+                return;
+              }
+            }
+            const result = await executeAccountAction(key, action, params, meta);
+            sendJson({ ok: true, ...((result && typeof result === 'object' && !Array.isArray(result)) ? result : { items: result }) });
+          } catch (error) {
+            log(`[账号] ${spec.label}失败 (${key})：${error?.message ?? error}`);
+            sendJson({ ok: false, error: `${spec.label}失败：${error?.message ?? error}` }, 500);
+          }
+          return;
+        }
+        // ── 云 TTS（PR #4）：先校验令牌、审计文字，再合成、发送（原 PR 在校验之前就合成）────────────
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/speak') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          const token = String(req.headers['x-agent-token'] ?? '').trim();
+          if (currentMode !== 'reserved2') { sendJson({ ok: false, error: '该接口仅二代仿真模式可用' }, 403); return; }
+          if (!token || !agentTokenOk(key, token)) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (cfg.socialV2?.tools?.speak !== true) { sendJson({ ok: false, error: '工具未启用：qq_speak' }, 403); return; }
+          if (!v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          const m = /^(group|private):(\d+)$/.exec(key);
+          if (!m || !modeAllowed(key, m[1], Number(m[2]), cfg, currentMode)) { sendJson({ ok: false, error: '当前模式不允许操作该会话' }, 403); return; }
+          if (socialV2.paused) { sendJson({ ok: false, error: '二代仿真已暂停' }, 403); return; }
+          if (shouldBlockSilentReply(key)) { sendJson({ ok: false, error: '当前处于静默状态，不能发语音' }, 403); return; }
+          const text = String(body.text ?? '').trim();
+          if (!text) { sendJson({ ok: false, error: '要念的文字不能为空' }, 400); return; }
+          if (text.length > MAX_SPEAK_CHARS) { sendJson({ ok: false, error: `文字太长（${text.length} 字），最多 ${MAX_SPEAK_CHARS} 字` }, 400); return; }
+          if (shouldAuditKey(key) && accountTextBlocked(text)) {
+            log(`⚠️ 语音合成被安全策略拦截 (${key})：文字疑似含敏感信息`);
+            sendJson({ ok: false, error: '要念的文字疑似包含敏感信息（路径/凭据/会话令牌），已阻止' }, 403);
+            return;
+          }
+          try {
+            const vc = voiceCfg();
+            const r = await synthesizeSpeech(text, { libraryDir: vc.dir, voice: body.voice, rate: body.rate, pitch: body.pitch, defaultVoice: cfg.socialV2?.voice?.ttsVoice });
+            const sent = await sendVoiceForV2(key, r.name, { label: 'tts' });
+            // 不回传本机路径（sendVoiceForV2 的返回里有绝对路径，会经工具结果回到模型）
+            sendJson({ ok: true, key, voice: r.voice, bytes: r.bytes, messageId: sent?.message_id ?? null });
+          } catch (error) {
+            log(`[reserved2] 云语音失败 (${key})：${error?.message ?? error}`);
+            sendJson({ ok: false, error: `发语音失败：${error?.message ?? error}` }, error?.statusCode ?? 500);
           }
           return;
         }
@@ -8724,6 +9073,47 @@ async function main() {
           cfg.socialV2 = { ...(cfg.socialV2 ?? {}), compact: next };
           log(`控制台：上下文压缩改为${next.enabled ? `提前压缩（上一步读到 ${Math.round(next.thresholdTokens / 10_000)} 万 token 时）` : '交给 DSH 自己压缩（约 80 万 token 时）'}`);
           sendJson({ ok: true, mode: next.enabled ? 'early' : 'dsh', thresholdTokens: next.thresholdTokens });
+          return;
+        }
+        // ── 账号门面操作：控制台设置 / 记录 / 改回（仅控制台：带 agent token 的请求在前面的白名单就被拒了）──
+        if (req.method === 'GET' && url.pathname === '/api/account') {
+          const acct = accountCfg();
+          const tools = cfg.socialV2?.tools ?? {};
+          sendJson({
+            ok: true,
+            config: acct,
+            tools: Object.fromEntries(['qzonePost', 'qzoneComment', 'qzoneLike', 'qzoneRead', 'setSignature', 'setNickname', 'setOnlineStatus', 'setInputStatus'].map((f) => [f, tools[f] === true])),
+            quota: accountQuota.snapshot(),
+            pending: accountPending.list().map((it) => ({ action: it.action, stage: it.stage, summary: describeAction(it.action, it.params).slice(0, 120), trigger: it.trigger ?? it.meta?.trigger ?? null, expiresAt: it.expiresAt ?? null })),
+            history: accountHistory.list(50),
+            roles: listRoles(),
+            privateRole: cfg.ownerQQ ? roleNameForKey(`private:${cfg.ownerQQ}`) : null,
+            globalRole: readRoleState().role,
+            ownerQQ: Boolean(cfg.ownerQQ),
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/account/config') {
+          const body = await readBody();
+          const persona = String(body.persona ?? 'follow').trim();
+          const personaFile = persona === 'follow' || persona === 'global' ? null : resolveRoleFile(ROLES_DIR, persona);
+          if (persona !== 'follow' && persona !== 'global' && (!personaFile || !fs.existsSync(personaFile) || path.basename(personaFile, '.md') !== persona)) {
+            sendJson({ ok: false, error: `人格卡「${persona.slice(0, 40)}」不存在` }, 400);
+            return;
+          }
+          const next = normalizeAccountConfig({ ...(cfg.socialV2?.account ?? {}), ...body, persona });
+          const configFile = path.join(ROOT, 'config.json');
+          const file = readConfigObject(configFile);
+          file.socialV2 = { ...(file.socialV2 ?? {}), account: next };
+          atomicWriteJson(configFile, file);
+          cfg.socialV2 = { ...(cfg.socialV2 ?? {}), account: next };
+          log(`控制台：账号门面操作设置已更新（人格：${next.persona}）`);
+          sendJson({ ok: true, config: next });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/account/restore') {
+          const body = await readBody();
+          try { sendJson(await restoreAccountHistory(Number(body.id))); } catch (error) { sendJson({ ok: false, error: error?.message ?? String(error) }, 400); }
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/session/compact') {
@@ -11575,7 +11965,7 @@ async function main() {
   function looksLikeAdminChannelText(raw) {
     const segs = Array.isArray(raw?.message) ? raw.message : [];
     const text = String(raw?.raw_message ?? segs.map((s) => s?.data?.text ?? '').join(''));
-    return /确认\s*\d{4,8}|\/confirm|确认请回复|审批\s*#\d+|模式已变更|管理通道|动态码|TOTP|^\s*\/(mode|level|perm|permission|panic|cancel|approvals|audit|whois|person|note|share|say|review|admin)\b/i.test(text);
+    return /确认\s*\d{4,8}|\/confirm|确认请回复|【账号操作|审批\s*#\d+|模式已变更|管理通道|动态码|TOTP|^\s*\/(mode|level|perm|permission|panic|cancel|approvals|audit|whois|person|note|share|say|review|admin)\b/i.test(text);
   }
 
   // waitMs > 0：最多等这么久，等不到返回 { pending: true, messageId }（后台继续取，结果进缓存；不负缓存）。
@@ -12370,6 +12760,7 @@ async function main() {
     st.wakeConfig.lastWakeAt = now;
     st.wakeConfig.wakeCount = (st.wakeConfig.wakeCount || 0) + 1;
     st.lastWakeReason = reason;
+    noteAccountTurnTrigger(key, reason, st);
     saveSocialV2State();
     const promptText = buildWakePromptV2(key, reason);
     log(`[reserved2] 唤醒 ${key}（${reason}）`);
@@ -12830,6 +13221,8 @@ async function main() {
         && String(event.user_id) === String(cfg.ownerQQ ?? '') && String(id) === String(cfg.ownerQQ ?? '')) {
       const ownerText = (await segmentsToText(event.message ?? [], { includeReply: false })).trim();
       if (ownerText) {
+        // 账号门面操作的「确认 / 取消 / 撤销 <6 位码>」：只认本模块发出的码，在交给模型之前处理
+        if (await tryHandleAccountReply(ownerText)) { rememberAdminMessageId(event.message_id ?? event.msg_id); return; }
         if (await tryHandleApprovalReply(key, ownerText, true)) { rememberAdminMessageId(event.message_id ?? event.msg_id); return; }
         // /remind 定时任务命令：桥接直接处理，不交给模型
         const remindReply = await handleRemindCommand(ownerText);
@@ -13597,7 +13990,7 @@ async function main() {
                     }
                   }
                   // 旧学习会话 turn 结束后从集合移除，避免残留
-                  if (frame.sessionId !== slangLearnerSessionId && frame.sessionId !== stickerDescriberSessionId) learnerSessions.delete(frame.sessionId);
+                  if (frame.sessionId !== slangLearnerSessionId && frame.sessionId !== stickerDescriberSessionId && frame.sessionId !== accountWriterSessionId) learnerSessions.delete(frame.sessionId);
                 }
               }
               continue;

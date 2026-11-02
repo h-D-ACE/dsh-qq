@@ -214,7 +214,32 @@
       "crossGroup": true,
       "sendVoice": false,
       "ownerRelay": false,
-      "ownerGroupAccess": false
+      "ownerGroupAccess": false,
+      "recall": false,
+      "qzonePost": false,
+      "qzoneComment": false,
+      "qzoneLike": false,
+      "qzoneRead": false,
+      "setSignature": false,
+      "setNickname": false,
+      "setOnlineStatus": false,
+      "setInputStatus": false,
+      "speak": false
+    },
+    "account": {
+      "persona": "follow",
+      "confirm": {
+        "post": { "owner": true, "proactive": true },
+        "deletePost": { "owner": true, "proactive": true },
+        "comment": { "owner": true, "proactive": true },
+        "signature": { "owner": true, "proactive": true },
+        "nickname": { "owner": true, "proactive": true }
+      },
+      "limits": { "post": 3, "deletePost": 10, "comment": 5, "like": 30, "signature": 5, "nickname": 3 },
+      "commentDelaySeconds": 120,
+      "confirmTtlSeconds": 600,
+      "allowPublic": true,
+      "defaultUgcRight": 4
     },
     "ownerRelay": {
       "maxPerHour": 10,

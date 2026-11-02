@@ -192,5 +192,5 @@ test('③ 闸门：agent token 拒绝；agent 模式 / 不能看图 / DSH 未就
 test('④ 看图会话在每一批结束后仍留在学习会话集合里（否则第二批的回答收不到）', async () => {
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('../src/bridge.js', import.meta.url), 'utf8');
-  assert.match(src, /frame\.sessionId !== slangLearnerSessionId && frame\.sessionId !== stickerDescriberSessionId\) learnerSessions\.delete/);
+  assert.match(src, /frame\.sessionId !== slangLearnerSessionId && frame\.sessionId !== stickerDescriberSessionId(?: && frame\.sessionId !== \w+)*\) learnerSessions\.delete/);
 });

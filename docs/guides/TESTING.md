@@ -3,7 +3,7 @@
 ## 离线回归（不需要 QQ、SnowLuma、DSH 或网络）
 
 ```powershell
-npm run test:audit      # 73 个脚本：原版与各版本新增的离线回归，清单见 scripts/test-audit.mjs；macOS 上 test-console-encoding 是已知失败（只适用于 Windows）
+npm run test:audit      # 74 个脚本：原版与各版本新增的离线回归，清单见 scripts/test-audit.mjs；macOS 上 test-console-encoding 是已知失败（只适用于 Windows）
 npm run test:v030       # 只跑 v0.3.0 的四个新测试
 ```
 
@@ -40,6 +40,7 @@ npm run test:v030       # 只跑 v0.3.0 的四个新测试
 | `scripts/test-default-roles.mjs` | 恢复默认人格：发布包自带的原版卡合法、状态（在 / 被删 / 改过）、被删放回、改过先备份再恢复、本来就是原版不动、备份最多 10 份、不是默认人格拒绝；端到端（恢复当前人格按生效方式处理、不自动切换人格、AI 调不了） |
 | `scripts/test-role-per-key.mjs` | 按会话设置人格卡：老状态文件不变、byKey 命中 / 未命中 / null 三种回落、非法 key 与别名、路径穿越拒绝、改名 / 删除跟随；各会话注入自己的卡（二代【当前角色】、一代角色提示、qq_get_prompt）；只给卡变了的会话安排读卡唤醒；控制台接口与 AI 调不了；`/role` 只改当前会话、群友发的不生效 |
 | `scripts/test-dsh-auth-hint.mjs` | DSH 401 诊断提示：识别 401；凭据缺失 / 对不上两种说法与发现另一个有凭据的目录；用户目录显示成 ~、不输出密钥；10 分钟限频与恢复后重置；bridge.js 接线（从没就绪过也提示、「事件流 0 帧」在 401 时不再说成协议不匹配） |
+| `scripts/test-owner-account.mjs` | 撤回 / 账号门面操作 / 云语音（PR #4）：参数校验、确认矩阵、确认码只能用一次且会过期、额度按日历日、记录落盘 0600、门面人格；群会话的令牌冒充管理员私聊 key 一律 403 且不发任何 OneBot 动作；默认先发预览、模型拿不到码、管理员确认后才执行；「你叫它做」与「它主动做」分开（补收、定时不算）；审计、额度、评论撤销窗口、签名改回、控制台接口 AI 调不了；撤回只能撤自己的；云语音令牌校验在合成之前；MCP 只转发、默认不注册 |
 | `scripts/test-backfill.mjs` | 断线补收：断档检测（含桥接重启后读回）、消息 ID 去重、命令类识别、挑选（时间窗 / 自己发的 / 收过的 / 太旧 / 上限）；端到端（补收进未读带原始时间与标记、有 @ 排唤醒、唤醒提示说明是补收的且送达后清掉、不执行补收到的命令只提醒管理员、重复补收不重复、太旧不唤醒、非二代不补）；启动后第一个事件包自动触发；拉历史失败时记下没补上的时间、重试、下次从更早的时间补 |
 | `scripts/test-send-limit-console.mjs` | 发言上限：超过每分钟上限 AI 收到说明（桥接的上限，不是 QQ 的）、控制台状态里有最近 24 小时被拦次数（AI 拿不到）、控制台改上限马上生效；总览页卡片 |
 | `scripts/test-agent-preset-patches.mjs` | preset 源与 bundle patch 不漂移（含新 preset） |

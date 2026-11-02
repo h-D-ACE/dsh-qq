@@ -123,6 +123,37 @@ TOTP 秘密**不在** `config.json` 里：用 `npm run admin:totp-setup` 写入 
 
 不变的边界：在群里说话仍然只能走托付（`qq_ask_group_session`），私聊的令牌依旧不能直接往群里发；规则只用于说话习惯，不能改模式、权限或安全设置（那些只能用管理通道命令）；查看与增删规则都记入管理审计，增删规则会私聊通知你。
 
+## 撤回、账号门面操作、云语音（PR #4，全部默认关闭）
+
+来自 PR #4（qjjer），按项目的安全约定重做。开关都在 `socialV2.tools`，必须显式设为 `true`；改动后重启桥接，并重启 DSH 才会出现在工具列表里。控制台「二代仿真 → 工具开关」可以直接勾。
+
+| 开关 | 工具 | 说明 |
+| --- | --- | --- |
+| `recall` | `qq_recall` | 撤回 AI 自己发的消息。只认本会话里它自己发出去的消息 ID，撤不了别人的；QQ 约 2 分钟内才能撤 |
+| `qzonePost` | `qq_qzone_post` / `qq_qzone_delete` | 发说说 / 删说说 |
+| `qzoneComment` | `qq_qzone_comment` | 评论说说。⚠️ 空间评论发出后没有接口能删 |
+| `qzoneLike` | `qq_qzone_like` | 点赞 / 取消赞 |
+| `qzoneRead` | `qq_qzone_list` / `qq_qzone_feeds` / `qq_my_profile` | 只读 |
+| `setSignature` / `setNickname` | `qq_set_signature` / `qq_set_nickname` | 改签名 / 昵称；改之前存下旧值，控制台可一键改回 |
+| `setOnlineStatus` / `setInputStatus` | `qq_set_online_status` / `qq_set_input_status` | 在线状态 / 「正在输入」（只对管理员显示） |
+| `speak` | `qq_speak` | 云语音（Edge TTS）。⚠️ 要念的文字会发给微软的服务器；需要本机 `python -m pip install --upgrade edge-tts`（≥ 7.3，旧版会一直 403）。可用 `socialV2.voice.ttsVoice` 设默认音色、`EDGE_TTS_CMD` 指定命令 |
+
+除 `recall` 和 `speak` 外，这些操作**只在管理员本人的私聊里**能用：桥接按会话令牌认人，群里谁叫 AI 做都会被拒，这一条没有开关。这些是 NapCat 的扩展接口（已对照 NapCat 源码核对动作名和参数）：发说说、删说说、签名、昵称、在线状态、正在输入在 NapCat 4.18.38 上就有；**读说说 / 读动态 / 点赞 / 评论要更新版的 NapCat**（上游 main 已有，4.18.38 还没有，调用会报「不支持」）。SnowLuma 不一定有。
+
+`socialV2.account`（控制台「二代仿真 → 账号门面操作」可改）：
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `confirm.<操作>.owner` | `true` | 你在私聊里发消息叫它做时，要不要先发预览、等你回复「确认 6 位码」。操作：`post` / `deletePost` / `comment` / `signature` / `nickname` |
+| `confirm.<操作>.proactive` | `true` | 它自己主动做时（定时、主动冒泡、补收消息等）要不要确认。「你叫的」还是「它主动的」由桥接判断，AI 改不了 |
+| `persona` | `follow` | 说说、评论、签名、昵称用哪个人格写：`follow` 跟私聊的人格卡；`global` 跟全局默认；或写一张人格卡的名字。和私聊不同时，先由专用的写作会话按那张卡改写，确认预览里同时列出原稿 |
+| `limits` | 说说 3、删说说 10、评论 5、点赞 30、签名 5、昵称 3 | 每天最多几次（按定时任务设置的时区算日期；0 = 不允许） |
+| `commentDelaySeconds` | `120` | 评论确认（或免确认）后再等多少秒才真正发出，期间回复「撤销 6 位码」可拦下；0 = 不等 |
+| `confirmTtlSeconds` | `600` | 确认码有效期 |
+| `allowPublic` / `defaultUgcRight` | `true` / `4` | 能不能发「所有人可见」的说说；默认可见范围（1 所有人 / 4 好友 / 64 仅自己）。AI 还可以选 16（只给指定的人看）或 128（**不给**指定的人看，注意不是「指定人可见」） |
+
+管理员回复的「确认 / 取消 / 撤销 6 位码」由桥接在交给 AI 之前截下，AI 看不到也替你确认不了；待确认的操作只在内存里，桥接重启后作废。
+
 ## `socialV2.sticker.maxBytes` —— 表情单张大小上限（默认 `10485760`，即 10MB）
 
 AI **收藏**群友的表情、**发送**收藏表情时，桥接会先自己下载并校验图片（DNS 固定、逐跳校验、限制大小），再以 base64 交给网关；超过这个上限就拒绝。
@@ -200,6 +231,9 @@ AI **收藏**群友的表情、**发送**收藏表情时，桥接会先自己下
 | `state/scheduler.json` | （v1.1.0）定时任务：总开关、默认时区、安全限制、任务列表、执行记录；0600 |
 | `state/silence-schedule.json` | （v1.1.0）定时静默：时间段、时区、静默期间的行为选项；0600 |
 | `state/sticker-describe-session.json` | （v1.1.1）一键补表情说明用的专用看图会话 ID 与 preset；删掉会在下次使用时重建 |
+| `state/account-writer-session.json` | 账号门面人格改写用的专用写作会话 ID 与 preset；删掉会在下次使用时重建 |
+| `state/account-quota.json` | 账号门面操作当天已用的次数 |
+| `state/account-history.json` | 账号门面操作记录（最近 200 条：发了什么、改之前是什么）；删掉就没有记录，也不能再一键改回 |
 | `state/prompt-blocks.json` | （v1.1.1）各会话上次完整拿到的黑话表 / 表情块指纹（只存指纹）；删掉只会让下一次唤醒重新完整给 |
 | `state/role-backups/` | （v1.1.1）「恢复默认人格」时，改过的那份角色卡先备份到这里（每个人格最多 10 份，0600）；可以随时删 |
 | `state/upstream-seen.json` | （v1.1.2）最后一次收到 QQ 事件包的时间（每分钟最多写一次），桥接停过之后用来发现断档、补收错过的消息；可以随时删 |
